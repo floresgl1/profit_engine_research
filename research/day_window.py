@@ -36,25 +36,11 @@ from itertools import pairwise
 from zoneinfo import ZoneInfo
 
 from profit_engine.weather import Observation, is_dst, is_transition
+from profit_engine.weather.iem import drop_spikes
 
 NY = ZoneInfo("America/New_York")
 CALM_GAP = Decimal(5)  # DST day is "calm" when both midnight hours are this far below the core peak
-SPIKE = Decimal(5)  # a reading this far above both neighbours is treated as bad data
 MAX_GAP = timedelta(minutes=90)  # longest allowed gap between observations in a usable day
-
-
-def drop_spikes(observations: Sequence[Observation]) -> list[Observation]:
-    """Remove isolated upward spikes: SPIKE above both neighbours, each within an hour."""
-    obs = sorted(observations, key=lambda o: o.at)
-    kept = []
-    for i, o in enumerate(obs):
-        if 0 < i < len(obs) - 1:
-            before, after = obs[i - 1], obs[i + 1]
-            close = o.at - before.at <= timedelta(hours=1) and after.at - o.at <= timedelta(hours=1)
-            if close and o.tmpf - before.tmpf >= SPIKE and o.tmpf - after.tmpf >= SPIKE:
-                continue
-        kept.append(o)
-    return kept
 
 
 # --- step 2/3 building block: split a day's observations by the hours the windows disagree on ---

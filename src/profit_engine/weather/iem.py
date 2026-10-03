@@ -9,14 +9,16 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from profit_engine.venues.http import ReadOnlyHttp
 
 BASE_URL = "https://mesonet.agron.iastate.edu"
 CENTRAL_PARK = "NYC"
+SPIKE = Decimal(5)  # a reading this far above both neighbours is treated as bad data
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,3 +64,17 @@ class IemAsosClient:
             },
         )
         return parse_csv(text)
+
+
+def drop_spikes(observations: Sequence[Observation]) -> list[Observation]:
+    """Remove isolated upward spikes: SPIKE above both neighbours, each within an hour."""
+    obs = sorted(observations, key=lambda o: o.at)
+    kept = []
+    for i, o in enumerate(obs):
+        if 0 < i < len(obs) - 1:
+            before, after = obs[i - 1], obs[i + 1]
+            close = o.at - before.at <= timedelta(hours=1) and after.at - o.at <= timedelta(hours=1)
+            if close and o.tmpf - before.tmpf >= SPIKE and o.tmpf - after.tmpf >= SPIKE:
+                continue
+        kept.append(o)
+    return kept
