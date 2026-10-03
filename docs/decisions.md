@@ -79,3 +79,11 @@ and to store.
 | Book snapshots | One row per poll, levels deduplicated by content hash in `book_states` | Full copy per poll; only store changes | Replay needs to know a book was *observed* at time t even if unchanged; storing the levels once per distinct state keeps that cheap. |
 | Skipped snapshots | Logged to `skipped_snapshots` with the reason | Log file only | Lets you audit what was skipped and why after the fact. |
 | Migrations | `schema_version` table; mismatch is a hard error | Migration tool | One schema so far; add a tool when a second version exists. |
+
+## Models and strategy
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Model interface | `predict(market, book) -> Decimal \| None` (None = abstain) | Market only | A model needs the book to know the current price; abstaining is allowed so a model is never forced to guess. |
+| Baseline | `MidpointBaseline`: returns the book midpoint | Last trade price | Its Brier score must equal the market's, which checks the pipeline end to end. Midpoint is also what "market probability" means in scoring. |
+| Strategy | `EdgeStrategy` (placeholder): buy YES or NO when `p - ask - fee` beats `min_edge` (0.03); limit price stops the walk where pre-fee edge drops below `min_edge`; at most 50 contracts per outcome per market; hold to resolution | No strategy | The spec has no strategy, but the paper engine needs orders to run end to end. The midpoint baseline never trades by construction. |

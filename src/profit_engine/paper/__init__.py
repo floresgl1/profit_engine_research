@@ -2,10 +2,12 @@
 
 from profit_engine.paper.engine import FillConfig, contract_levels, simulate_fill
 from profit_engine.paper.portfolio import Portfolio, Position
+from profit_engine.paper.strategy import EdgeStrategy
 from profit_engine.paper.trader import BookProvider, LiveBookProvider, PaperTrader
 
 __all__ = [
     "BookProvider",
+    "EdgeStrategy",
     "FillConfig",
     "LiveBookProvider",
     "PaperTrader",
