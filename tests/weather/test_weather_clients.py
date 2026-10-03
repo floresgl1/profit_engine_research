@@ -96,7 +96,7 @@ class TestIem:
 
 
 def market(event, value, rules):
-    return {"event_ticker": event, "expiration_value": value, "rules_primary": rules}
+    return {"event_ticker": event, "ticker": f"{event}-T70", "expiration_value": value, "rules_primary": rules}
 
 
 TWC_RULES = "If the maximum temperature recorded at New York City for Aug 14, 2026, is greater than 92° fahrenheit according to The Weather Company, then the market resolves to Yes."

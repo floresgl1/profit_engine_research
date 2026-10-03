@@ -11,7 +11,7 @@ import logging
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -21,11 +21,43 @@ log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
+class Bucket:
+    """One market in a temperature event, described by Kalshi's strike fields.
+
+    strike_type "greater": value > floor; "less": value < cap;
+    "between": floor <= value <= cap (inclusive, per the contract terms).
+    """
+
+    ticker: str
+    strike_type: str
+    floor: Decimal | None
+    cap: Decimal | None
+
+    def contains(self, value: Decimal) -> bool:
+        if self.strike_type == "greater":
+            return value > self.floor
+        if self.strike_type == "less":
+            return value < self.cap
+        if self.strike_type == "between":
+            return self.floor <= value <= self.cap
+        raise ValueError(f"unknown strike_type {self.strike_type!r}")
+
+
+def bucket_from(raw: dict[str, Any]) -> Bucket:
+    def dec(key: str) -> Decimal | None:
+        value = raw.get(key)
+        return None if value in (None, "") else Decimal(str(value))
+
+    return Bucket(raw["ticker"], raw.get("strike_type", ""), dec("floor_strike"), dec("cap_strike"))
+
+
+@dataclass(frozen=True, slots=True)
 class SettledTemperature:
     event_ticker: str
     day: date
     value: Decimal | None  # None when Kalshi published no expiration_value
     source: str  # "twc", "nws", or "unspecified"
+    buckets: tuple[Bucket, ...] = ()
 
 
 def event_day(event_ticker: str) -> date:
@@ -57,6 +89,7 @@ def group_events(markets: list[dict[str, Any]]) -> list[SettledTemperature]:
                 day=event_day(event),
                 value=values.pop() if len(values) == 1 else None,
                 source=sources.pop() if len(sources) == 1 else "unspecified",
+                buckets=tuple(sorted((bucket_from(m) for m in members), key=lambda b: b.ticker)),
             )
         )
     settled.sort(key=lambda s: s.day)
@@ -78,3 +111,64 @@ def _paginate(http: ReadOnlyHttp, path: str, params: dict[str, Any]) -> Iterator
         cursor = data.get("cursor") or ""
         if not cursor:
             return
+
+
+@dataclass(frozen=True, slots=True)
+class Quote:
+    """Best YES bid and ask at the close of an hourly candle. 0 bid / 1 ask mean that side was empty."""
+
+    at: datetime
+    bid: Decimal
+    ask: Decimal
+
+    @property
+    def midpoint(self) -> Decimal | None:
+        if self.bid <= 0 or self.ask >= 1 or self.bid >= self.ask:
+            return None
+        return (self.bid + self.ask) / 2
+
+
+def _close(side: dict[str, Any] | None) -> Decimal | None:
+    if not side:
+        return None
+    value = side.get("close_dollars", side.get("close"))
+    return None if value in (None, "") else Decimal(value)
+
+
+def parse_candles(candles: list[dict[str, Any]]) -> list[Quote]:
+    quotes = []
+    for c in candles:
+        bid, ask = _close(c.get("yes_bid")), _close(c.get("yes_ask"))
+        if bid is None or ask is None:
+            continue
+        quotes.append(Quote(datetime.fromtimestamp(c["end_period_ts"], tz=timezone.utc), bid, ask))
+    quotes.sort(key=lambda q: q.at)
+    return quotes
+
+
+def quote_at(quotes: list[Quote], when: datetime) -> Quote | None:
+    """Last quote whose candle closed at or before `when` (never a later one)."""
+    best = None
+    for q in quotes:
+        if q.at > when:
+            break
+        best = q
+    return best
+
+
+def price_history(
+    http: ReadOnlyHttp, tickers: list[str], start: datetime, end: datetime, historical: bool
+) -> dict[str, list[Quote]]:
+    """Hourly quotes per ticker. Archived markets need one call each; live ones batch up to 100."""
+    params = {"start_ts": str(int(start.timestamp())), "end_ts": str(int(end.timestamp())), "period_interval": "60"}
+    out: dict[str, list[Quote]] = {}
+    if historical:
+        for ticker in tickers:
+            data = http.get_json(f"/historical/markets/{ticker}/candlesticks", params)
+            out[ticker] = parse_candles(data.get("candlesticks") or [])
+        return out
+    for i in range(0, len(tickers), 100):
+        data = http.get_json("/markets/candlesticks", dict(params, market_tickers=",".join(tickers[i : i + 100])))
+        for market in data.get("markets") or []:
+            out[market["market_ticker"]] = parse_candles(market.get("candlesticks") or [])
+    return out

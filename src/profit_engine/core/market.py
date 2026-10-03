@@ -25,8 +25,9 @@ class MarketStatus(str, Enum):
 class Market:
     """One binary market. YES is the venue's first outcome (`yes_label`).
 
-    `venue_meta` holds identifiers only the venue's own adapter needs
-    (e.g. Polymarket token ids). Strategy code must not read it.
+    `venue_meta` holds venue-specific details (e.g. Polymarket token ids,
+    Kalshi strike fields). Generic strategy code must not read it; models
+    built for one venue's product (like the KXHIGH temperature model) may.
     """
 
     venue: str

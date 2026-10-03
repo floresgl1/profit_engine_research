@@ -214,7 +214,13 @@ class KalshiSource:
             fee_schedule=self._fee_schedule(event),
             contract_step=CONTRACT_STEP,
             min_order_size=CONTRACT_STEP,
-            venue_meta={"event_ticker": event, "series_ticker": self._series_of(event) if event else ""},
+            venue_meta={
+                "event_ticker": event,
+                "series_ticker": self._series_of(event) if event else "",
+                "strike_type": raw.get("strike_type") or "",
+                "floor_strike": "" if raw.get("floor_strike") is None else str(raw["floor_strike"]),
+                "cap_strike": "" if raw.get("cap_strike") is None else str(raw["cap_strike"]),
+            },
         )
 
     def _series_of(self, event_ticker: str) -> str:
