@@ -14,6 +14,7 @@ from profit_engine.core.time import require_utc
 
 
 class MarketStatus(str, Enum):
+    UPCOMING = "upcoming"  # created, not yet open
     OPEN = "open"  # accepting orders
     PAUSED = "paused"  # temporarily halted by the venue
     CLOSED = "closed"  # no longer trading, outcome not final

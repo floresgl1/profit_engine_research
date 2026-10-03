@@ -55,3 +55,16 @@ and to store.
 | Holding YES and NO | Both kept; settlement pays `yes * v + no * (1 - v)` | Kalshi-style netting | Same final PnL, simpler bookkeeping. |
 | PnL | Realized at settlement (cost basis tracks fees) | Mark-to-market | Phase 1 scores predictions, not intraday PnL. |
 | Selling | Only what the paper portfolio holds | Shorting | Keeps cash accounting obvious. |
+
+## Venue access
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| SDK vs raw HTTP | Raw HTTP through one GET-only client (`venues/http.py`, httpx) | Official Kalshi/Polymarket SDKs | Both SDKs ship order placement (Polymarket's also wallet signing). Not installing them keeps any trading code out of the dependency tree. `tests/test_read_only.py` fails the build if a write method, order endpoint, credential, signing library or venue SDK appears in `src/` or `uv.lock`. |
+| Polling vs WebSockets | REST polling | WebSockets | Kalshi's WebSocket requires an API key even for public channels, and keys default to read+write. Polling both venues needs **zero credentials**, which makes the no-orders rule trivially true. A WebSocket adapter can be added later behind the same interface (with a `scopes: ["read"]` Kalshi key). |
+| Retries | 429/5xx/transport errors retried with exponential backoff (2, 4, 8, 16 s), `Retry-After` honored; 0.1 s minimum spacing between requests | No retries | The unauthenticated Kalshi API returned 429 on the very first call during testing. |
+| Kalshi host | `external-api.kalshi.com/trade-api/v2` | `api.elections.kalshi.com` | Docs now recommend the dedicated external host. |
+| Kalshi market selection | By series ticker (e.g. `KXHIGHNY`), status open | All open markets | Kalshi lists thousands of markets; research targets specific series. |
+| Kalshi contract step | 0.01 contracts | Whole contracts | Docs: fixed-point counts with 0.01 granularity. |
+| Kalshi resolution | Only `finalized` counts, payout = `settlement_value_dollars` | `determined` | A determined result can still be disputed and amended. |
+| Kalshi status mapping | initialized->upcoming, active->open, inactive->paused, closed/determined/disputed/amended->closed, finalized->resolved; unknown->closed with a warning | Crash on unknown | A new venue status should not stop ingestion. |
