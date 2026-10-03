@@ -68,3 +68,14 @@ and to store.
 | Kalshi contract step | 0.01 contracts | Whole contracts | Docs: fixed-point counts with 0.01 granularity. |
 | Kalshi resolution | Only `finalized` counts, payout = `settlement_value_dollars` | `determined` | A determined result can still be disputed and amended. |
 | Kalshi status mapping | initialized->upcoming, active->open, inactive->paused, closed/determined/disputed/amended->closed, finalized->resolved; unknown->closed with a warning | Crash on unknown | A new venue status should not stop ingestion. |
+
+## Storage
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Database | SQLite (stdlib `sqlite3`, WAL mode), one file under `data/` | Postgres; Parquet files | Zero setup, single writer is all Phase 1 needs, easy to copy and inspect. Postgres adds a server for no Phase 1 benefit; Parquet is better for analytics but awkward for "first snapshot after time t" lookups. Revisit if multiple processes need to write. |
+| Number storage | Decimals as TEXT | REAL | Exact round-trip; no float error in prices, sizes or fees. |
+| Timestamps | Fixed-width ISO-8601 UTC TEXT with microseconds | Unix epoch | Human-readable and sorts correctly as text. |
+| Book snapshots | One row per poll, levels deduplicated by content hash in `book_states` | Full copy per poll; only store changes | Replay needs to know a book was *observed* at time t even if unchanged; storing the levels once per distinct state keeps that cheap. |
+| Skipped snapshots | Logged to `skipped_snapshots` with the reason | Log file only | Lets you audit what was skipped and why after the fact. |
+| Migrations | `schema_version` table; mismatch is a hard error | Migration tool | One schema so far; add a tool when a second version exists. |
