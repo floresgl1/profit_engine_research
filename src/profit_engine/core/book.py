@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from itertools import pairwise
 from datetime import datetime
 from decimal import Decimal
 
@@ -73,12 +74,12 @@ class OrderBook:
                 if not isinstance(level, Level):
                     raise TypeError(f"OrderBook.{name} must contain Level, got {type(level).__name__}")
 
-        for better, worse in zip(self.bids, self.bids[1:]):
+        for better, worse in pairwise(self.bids):
             if not better.price > worse.price:
                 raise InvalidOrderBook(
                     f"bids must be strictly descending by price: {better.price} then {worse.price}"
                 )
-        for better, worse in zip(self.asks, self.asks[1:]):
+        for better, worse in pairwise(self.asks):
             if not better.price < worse.price:
                 raise InvalidOrderBook(
                     f"asks must be strictly ascending by price: {better.price} then {worse.price}"

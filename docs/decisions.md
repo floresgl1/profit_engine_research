@@ -110,3 +110,23 @@ and to store.
 | Missing book (404) | Counted as an invalid snapshot and skipped | Crash | Gamma can still say "open" after the CLOB has removed the book (seen live on a resolved market). Other HTTP errors propagate to the ingest loop. |
 | Resolution | `/v2/resolutions` with `status == "resolved"`; YES value = `payouts[0] / sum(payouts)` | Gamma `outcomePrices` | Payout vectors are the on-chain settlement; `[1, 1]` gives the 50/50 value 0.5. |
 | Contract step / minimum | 0.01 shares; minimum from `orderMinSize` (5 on every market seen) | | |
+
+## Ingest loop
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Scheduling | One synchronous loop (`profit-engine ingest`), poll every 30 s; re-list markets and check resolutions every 10 min | cron; APScheduler; asyncio | Simplest thing that works for tens of markets; easy to read and test with a fake clock. |
+| Predictions | Every model, every market, every poll | Only on book change | Storage is cheap and scoring's `last` view removes the weighting bias. |
+| Live paper fills | After a decision, wait out the latency, then fetch a **fresh** book for that market | Fill on the next poll | The next poll is up to 30 s away, which would silently replace your configured latency with the poll interval. |
+| Skip alert | ERROR log when more than 20% of a venue's last 200 snapshot attempts were skipped (needs 20+ attempts); fires once, logs recovery | Email/Slack | No outbound integrations in Phase 1; the hook (`SkipMonitor.on_alert`) is where one would go. |
+| Venue outages | `VenueHttpError` skips that venue for one cycle; other exceptions stop the loop | Retry forever / crash on any error | Matches the rule you set: only known-bad data is skippable. |
+| Restart | Paper portfolio is rebuilt from stored fills and resolutions, replayed in time order | Persist portfolio state | One source of truth (the fills table). |
+
+## Still unverified (check before relying on them)
+
+- **Kalshi `flat` fee table**: the fee schedule PDF was unreachable (HTTP 429). Those markets are not paper traded.
+- **Kalshi balance precision**: assumed direct-member $0.0001. If your account is FCM-cleared (e.g. through a broker), use $0.01 (`KalshiSource(balance_quantum=...)`).
+- **Kalshi fractional contracts on every market**: docs say counts have 0.01 granularity; no per-market flag was found.
+- **Kalshi unauthenticated rate limits**: not documented (token budgets apply to authenticated requests). The client spaces requests 0.1 s apart and backs off on 429.
+- **Polymarket fee exponent other than 1**: formula not documented; such markets get no fee schedule.
+- **Polymarket fee collection on buys**: modeled as a USDC cost; if the venue takes it in shares, the economic cost is the same to within rounding.

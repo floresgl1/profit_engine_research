@@ -177,11 +177,11 @@ class TestInvariants:
         assert f.filled_quantity <= D(fraction) * depth
         assert f.filled_quantity <= D(qty)
         # Each leg sits exactly on a visible level and never takes more than it shows.
-        for leg, lvl in zip(f.legs, available):
+        for leg, lvl in zip(f.legs, available, strict=False):
             assert leg.price == lvl.price
             assert leg.size <= lvl.size
         # Every leg but the last consumes its whole level (no skipping ahead).
-        for leg, lvl in zip(f.legs[:-1], available):
+        for leg, lvl in zip(f.legs[:-1], available, strict=False):
             assert leg.size == lvl.size
 
 

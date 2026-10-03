@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from profit_engine.core import Fill, FillStatus, Outcome, Resolution, Side
@@ -62,3 +64,21 @@ class Portfolio:
         pnl = payout - pos.cost
         self.realized_pnl += pnl
         return pnl
+
+
+def rebuild_portfolio(cash: Decimal, fills: Iterable[Fill], resolutions: Iterable[Resolution]) -> Portfolio:
+    """Replay stored fills and settlements in time order. Used on restart.
+
+    Settlements replay at the venue's resolution time, which is no later than
+    when the live loop noticed them, so replayed cash is never tighter than
+    the original run's.
+    """
+    events: list[tuple[datetime, int, Fill | Resolution]] = [(f.order.decided_at, 0, f) for f in fills]
+    events += [(r.resolved_at, 1, r) for r in resolutions]
+    portfolio = Portfolio(cash=cash)
+    for _, _, event in sorted(events, key=lambda e: (e[0], e[1])):
+        if isinstance(event, Fill):
+            portfolio.apply(event)
+        else:
+            portfolio.settle(event)
+    return portfolio

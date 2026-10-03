@@ -23,12 +23,16 @@ from pathlib import Path
 from profit_engine.core import (
     FeeSchedule,
     Fill,
+    FillStatus,
     Level,
     Market,
     MarketStatus,
     OrderBook,
+    Outcome,
+    PaperOrder,
     Prediction,
     Resolution,
+    Side,
     require_utc,
 )
 
@@ -326,6 +330,10 @@ class Store:
         ).fetchone()
         return Resolution(row[0], row[1], Decimal(row[2]), from_ts(row[3])) if row else None
 
+    def resolutions(self) -> list[Resolution]:
+        rows = self._conn.execute("SELECT * FROM resolutions ORDER BY resolved_at, venue, market_id")
+        return [Resolution(r[0], r[1], Decimal(r[2]), from_ts(r[3])) for r in rows]
+
     # --- predictions ----------------------------------------------------------
 
     def add_prediction(self, p: Prediction) -> None:
@@ -411,10 +419,37 @@ class Store:
                 ),
             )
 
+    def fills(self) -> list[Fill]:
+        """All stored paper fills, oldest decision first."""
+        fills = []
+        for r in self.fill_rows():
+            order = PaperOrder(
+                venue=r["venue"],
+                market_id=r["market_id"],
+                outcome=Outcome(r["outcome"]),
+                side=Side(r["side"]),
+                quantity=Decimal(r["quantity"]),
+                decided_at=from_ts(r["decided_at"]),
+                limit_price=_undec(r["limit_price"]),
+            )
+            fills.append(
+                Fill(
+                    order=order,
+                    status=FillStatus(r["status"]),
+                    legs=_levels(r["legs"]),
+                    filled_quantity=Decimal(r["filled_quantity"]),
+                    gross=Decimal(r["gross"]),
+                    fee=Decimal(r["fee"]),
+                    book_received_at=from_ts(r["book_received_at"]) if r["book_received_at"] else None,
+                    reason=r["reason"],
+                )
+            )
+        return fills
+
     def fill_rows(self) -> list[dict[str, str | None]]:
         cursor = self._conn.execute("SELECT * FROM paper_fills ORDER BY decided_at, id")
         columns = [c[0] for c in cursor.description]
-        return [dict(zip(columns, row)) for row in cursor]
+        return [dict(zip(columns, row, strict=True)) for row in cursor]
 
 
 def _market(row: tuple) -> Market:
