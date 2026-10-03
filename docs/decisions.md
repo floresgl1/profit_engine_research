@@ -130,3 +130,15 @@ and to store.
 - **Kalshi unauthenticated rate limits**: not documented (token budgets apply to authenticated requests). The client spaces requests 0.1 s apart and backs off on 429.
 - **Polymarket fee exponent other than 1**: formula not documented; such markets get no fee schedule.
 - **Polymarket fee collection on buys**: modeled as a USDC cost; if the venue takes it in shares, the economic cost is the same to within rounding.
+
+## Weather research (day window)
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Weather data | ACIS (`data.rcc-acis.org`, sid `NYCthr`) for NWS daily highs; IEM ASOS (`station=NYC`, routine + special reports) for observations **(yours)** | NCEI CDO (needs a token); NWS API (short history) | Both public, no credentials, years of history. |
+| Calibration days | Standard-time days plus DST days where both midnight hours are 5°F+ below the peak | All days | On other days the error measured would depend on the window being tested (circular). |
+| Error band | Worst case in **both** directions; a qualifying hour must beat the rest by more than the band's width | Upper bound only (as first agreed) | The data contains observations above the official high (down to -2.2°F), so the low side matters too. |
+| Data quality | Skip days with an observation gap over 90 minutes; drop isolated 5°F+ spikes | Use raw data | First run: a 2-hour gap produced an 8°F "undercount", and one spurious 80°F reading sat between 70 and 71. |
+| Calibration variants | Report both all-season and DST-only bands | Pick one | Which one is right is a judgment call; neither produced a qualifying date, so the conclusion doesn't depend on it. |
+| Method check | Run the same test on ACIS (known LST) before trusting it on TWC | Skip | A method that can't recover a known answer can't be trusted on an unknown one. It couldn't (no qualifying dates), which is itself the finding. |
+| Code placement | Reusable clients in `src/profit_engine/weather/`; one-off analysis in `research/` | Everything in `research/` | The temperature model will need the same clients and window definitions. |
