@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Local data (ingested snapshots, databases)
+data/
+
+# Secrets: never commit API keys or private keys
+.env
+*.pem
+*.key
