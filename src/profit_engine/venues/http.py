@@ -25,6 +25,10 @@ _RETRY_STATUSES = {429, 500, 502, 503, 504}
 class VenueHttpError(RuntimeError):
     """A request failed after retries, or returned a non-retryable error."""
 
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status  # HTTP status, or None for transport failures
+
 
 class ReadOnlyHttp:
     def __init__(
@@ -73,7 +77,9 @@ class ReadOnlyHttp:
                 delay *= 2
                 continue
             if response.status_code != 200:
-                raise VenueHttpError(f"GET {path} -> {response.status_code}: {response.text[:200]}")
+                raise VenueHttpError(
+                    f"GET {path} -> {response.status_code}: {response.text[:200]}", response.status_code
+                )
             return response.json()
         raise AssertionError("unreachable")
 

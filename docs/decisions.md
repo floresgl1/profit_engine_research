@@ -98,3 +98,15 @@ and to store.
 | Skill | `1 - model_brier / market_brier`; positive = model better | Raw difference | Scale-free; undefined (shown as `-`) when the market scored a perfect 0. |
 | Fractional outcomes | Brier uses the payout value directly (0.5 for a Polymarket 50/50); calibration hit rate = mean outcome | Drop non-binary outcomes | Keeps every resolved market in the score. |
 | Calibration buckets | 10 equal-width buckets, `[lower, upper)`, last one includes 1 | Quantile buckets | Readable fixed edges; empty buckets shown as `-`. |
+
+## Polymarket specifics
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Market id | `conditionId` | Gamma numeric id; token id | It's what `/v2/resolutions` keys on; token ids live in `venue_meta`. |
+| YES side | The market's first outcome (`outcomes[0]`, e.g. "Florida" in "Florida vs. Missouri") | Only Yes/No markets | Every two-outcome market fits the binary model; `yes_label` records which outcome YES means. Markets with more than two outcomes are skipped. |
+| Book | Only the first outcome token's book | Both tokens | The two books are exact mirrors (verified live). Halves the requests. |
+| Market selection | Top N open markets by 24h volume (default 50), optional `tag_id` | All markets | Thousands of markets; volume keeps the sample liquid. |
+| Missing book (404) | Counted as an invalid snapshot and skipped | Crash | Gamma can still say "open" after the CLOB has removed the book (seen live on a resolved market). Other HTTP errors propagate to the ingest loop. |
+| Resolution | `/v2/resolutions` with `status == "resolved"`; YES value = `payouts[0] / sum(payouts)` | Gamma `outcomePrices` | Payout vectors are the on-chain settlement; `[1, 1]` gives the 50/50 value 0.5. |
+| Contract step / minimum | 0.01 shares; minimum from `orderMinSize` (5 on every market seen) | | |
