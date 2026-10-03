@@ -16,7 +16,7 @@ before it was published.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 
 from profit_engine.venues.http import ReadOnlyHttp, VenueHttpError
@@ -40,6 +40,7 @@ class MaxForecast:
 class NbmRun:
     runtime: datetime
     maxima: dict[date, MaxForecast]
+    temps: dict[datetime, float] = field(default_factory=dict)  # 3-hourly forecast temperature, UTC
 
     @property
     def available_at(self) -> datetime:
@@ -48,16 +49,19 @@ class NbmRun:
 
 def parse_run(data: dict, runtime: datetime) -> NbmRun:
     maxima = {}
+    temps = {}
     for row in data.get("data") or []:
+        valid = datetime.strptime(row["ftime"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
+        if row.get("tmp") is not None:
+            temps[valid] = float(row["tmp"])
         if row.get("txn") is None:
             continue
-        valid = datetime.strptime(row["ftime"], "%Y-%m-%d %H:%M").replace(tzinfo=timezone.utc)
         if valid.hour != 0:
             continue  # 12Z rows are overnight minima
         target = (valid - timedelta(days=1)).date()
         xnd = row.get("xnd")
         maxima[target] = MaxForecast(target, runtime, float(row["txn"]), None if xnd is None else float(xnd))
-    return NbmRun(runtime, maxima)
+    return NbmRun(runtime, maxima, temps)
 
 
 class NbmClient:

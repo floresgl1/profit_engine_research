@@ -4,7 +4,13 @@ from decimal import Decimal as D
 
 import pytest
 
-from profit_engine.models.temperature import HighDistribution, bucket_probabilities, floor_from_observations
+from profit_engine.models.temperature import (
+    HighDistribution,
+    SpreadModel,
+    bucket_probabilities,
+    floor_from_observations,
+    predict_high,
+)
 from profit_engine.weather.kalshi_temps import Bucket
 
 # The Oct 4 KXHIGHNY event: six buckets that cover every whole-degree high exactly once.
@@ -95,3 +101,34 @@ class TestBuckets:
 def test_rejects_non_distribution():
     with pytest.raises(ValueError):
         HighDistribution({67: 0.5, 68: 0.4})
+
+
+class TestSpreadModel:
+    def test_fit_fixed(self):
+        # residuals 1, 3, -1, 1: mean 1; deviations 0, 2, -2, 0 -> var 8/3 -> sigma 1.633
+        m = SpreadModel.fit_fixed([1.0, 3.0, -1.0, 1.0])
+        assert m.bias == pytest.approx(1.0) and m.sigma == pytest.approx((8 / 3) ** 0.5)
+
+    def test_fit_scaled(self):
+        # residuals 2, 0 (bias 1): deviations 1, -1; xnd 1 and 2 -> k^2 = (1 + 0.25) / 2 -> k = 0.7906
+        m = SpreadModel.fit_scaled([2.0, 0.0], [1.0, 2.0])
+        assert m.k == pytest.approx((1.25 / 2) ** 0.5)
+        assert m.spread(2.0) == pytest.approx(2 * m.k)
+        assert m.spread(0.0) == pytest.approx(m.k)  # xnd floored at 1
+
+    def test_predict_high_applies_bias_and_floor(self):
+        m = SpreadModel(bias=1.0, sigma=1.0)
+        d = predict_high(m, txn=66.0, xnd=None, observed_max=69.0, low_band=-0.8)
+        # centered at 67, floor floor(68.2) = 68
+        assert min(d.probs) == 68
+        assert sum(d.probs.values()) == pytest.approx(1.0)
+
+    def test_round_trip(self):
+        m = SpreadModel(bias=0.5, k=1.7)
+        assert SpreadModel.from_dict(m.to_dict()) == m
+
+    def test_exactly_one_spread(self):
+        with pytest.raises(ValueError):
+            SpreadModel(bias=0.0)
+        with pytest.raises(ValueError):
+            SpreadModel(bias=0.0, sigma=1.0, k=1.0)
