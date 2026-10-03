@@ -87,3 +87,14 @@ and to store.
 | Model interface | `predict(market, book) -> Decimal \| None` (None = abstain) | Market only | A model needs the book to know the current price; abstaining is allowed so a model is never forced to guess. |
 | Baseline | `MidpointBaseline`: returns the book midpoint | Last trade price | Its Brier score must equal the market's, which checks the pipeline end to end. Midpoint is also what "market probability" means in scoring. |
 | Strategy | `EdgeStrategy` (placeholder): buy YES or NO when `p - ask - fee` beats `min_edge` (0.03); limit price stops the walk where pre-fee edge drops below `min_edge`; at most 50 contracts per outcome per market; hold to resolution | No strategy | The spec has no strategy, but the paper engine needs orders to run end to end. The midpoint baseline never trades by construction. |
+
+## Scoring
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Market probability | Book midpoint at prediction time (logged with best bid/ask) | Last trade; ask for YES | Mid is the standard implied probability; bid/ask are stored so you can re-score with another definition later. |
+| Same events | Predictions without a two-sided book are dropped from **both** scores and counted as excluded | Score the model on everything | Your spec: model and market on the same events. |
+| Multiple predictions per market | Reported two ways: `all` (every prediction) and `last` (latest per market) | One fixed choice | `all` over-weights markets polled longer; `last` weighs markets equally but uses the most-informed price. Seeing both shows whether the gap comes from a few heavily-polled markets. |
+| Skill | `1 - model_brier / market_brier`; positive = model better | Raw difference | Scale-free; undefined (shown as `-`) when the market scored a perfect 0. |
+| Fractional outcomes | Brier uses the payout value directly (0.5 for a Polymarket 50/50); calibration hit rate = mean outcome | Drop non-binary outcomes | Keeps every resolved market in the score. |
+| Calibration buckets | 10 equal-width buckets, `[lower, upper)`, last one includes 1 | Quantile buckets | Readable fixed edges; empty buckets shown as `-`. |
