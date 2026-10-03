@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
+
+from profit_engine.core.time import require_utc
 
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
@@ -88,10 +90,7 @@ class OrderBook:
                 f"book is crossed or locked: best bid {self.bids[0].price} >= best ask {self.asks[0].price}"
             )
 
-        if not isinstance(self.received_at, datetime):
-            raise TypeError("OrderBook.received_at must be a datetime")
-        if self.received_at.utcoffset() != timedelta(0):
-            raise ValueError("OrderBook.received_at must be timezone-aware UTC")
+        require_utc(self.received_at, "OrderBook.received_at")
 
     @property
     def best_bid(self) -> Level | None:
