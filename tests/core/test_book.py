@@ -4,7 +4,7 @@ from decimal import Decimal as D
 
 import pytest
 
-from profit_engine.core import Level, OrderBook
+from profit_engine.core import InvalidOrderBook, Level, OrderBook
 
 NOW = datetime(2026, 10, 3, 12, 0, tzinfo=timezone.utc)
 
@@ -43,17 +43,17 @@ class TestLevel:
 
     @pytest.mark.parametrize("price", ["0", "1", "-0.1", "1.5"])
     def test_price_strictly_inside_0_1(self, price):
-        with pytest.raises(ValueError):
+        with pytest.raises(InvalidOrderBook):
             L(price, "1")
 
     @pytest.mark.parametrize("size", ["0", "-1"])
     def test_size_positive(self, size):
-        with pytest.raises(ValueError):
+        with pytest.raises(InvalidOrderBook):
             L("0.5", size)
 
     @pytest.mark.parametrize("value", ["NaN", "Infinity", "sNaN"])
     def test_non_finite_rejected(self, value):
-        with pytest.raises(ValueError):
+        with pytest.raises(InvalidOrderBook):
             Level(D(value), D("1"))
 
     def test_frozen(self):
@@ -79,23 +79,23 @@ class TestOrderBook:
         assert book(asks=KALSHI_DOC_ASKS).best_bid is None
 
     def test_bids_must_descend(self):
-        with pytest.raises(ValueError, match="bids"):
+        with pytest.raises(InvalidOrderBook, match="bids"):
             book(bids=tuple(reversed(KALSHI_DOC_BIDS)))
 
     def test_asks_must_ascend(self):
-        with pytest.raises(ValueError, match="asks"):
+        with pytest.raises(InvalidOrderBook, match="asks"):
             book(asks=tuple(reversed(KALSHI_DOC_ASKS)))
 
     def test_duplicate_price_level_rejected(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(InvalidOrderBook):
             book(bids=(L("0.42", "13"), L("0.42", "5")))
 
     def test_crossed_rejected(self):
-        with pytest.raises(ValueError, match="crossed"):
+        with pytest.raises(InvalidOrderBook, match="crossed"):
             book(bids=(L("0.45", "1"),), asks=(L("0.44", "1"),))
 
     def test_locked_rejected(self):
-        with pytest.raises(ValueError, match="crossed or locked"):
+        with pytest.raises(InvalidOrderBook, match="crossed or locked"):
             book(bids=(L("0.44", "1"),), asks=(L("0.44", "1"),))
 
     def test_sides_must_be_tuples(self):
@@ -110,16 +110,19 @@ class TestOrderBook:
     def test_ids_non_empty(self, field):
         kwargs = dict(venue="kalshi", market_id="KXTEST", bids=(), asks=(), received_at=NOW)
         kwargs[field] = ""
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as exc:
             OrderBook(**kwargs)
+        assert not isinstance(exc.value, InvalidOrderBook)
 
     def test_naive_datetime_rejected(self):
-        with pytest.raises(ValueError, match="UTC"):
+        with pytest.raises(ValueError, match="UTC") as exc:
             book(received_at=datetime(2026, 10, 3, 12, 0))
+        assert not isinstance(exc.value, InvalidOrderBook)
 
     def test_non_utc_datetime_rejected(self):
-        with pytest.raises(ValueError, match="UTC"):
+        with pytest.raises(ValueError, match="UTC") as exc:
             book(received_at=datetime(2026, 10, 3, 12, 0, tzinfo=timezone(timedelta(hours=-4))))
+        assert not isinstance(exc.value, InvalidOrderBook)
 
     def test_frozen(self):
         ob = book(KALSHI_DOC_BIDS, KALSHI_DOC_ASKS)

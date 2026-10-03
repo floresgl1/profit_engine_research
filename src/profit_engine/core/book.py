@@ -10,6 +10,15 @@ _ZERO = Decimal(0)
 _ONE = Decimal(1)
 
 
+class InvalidOrderBook(ValueError):
+    """Venue data failed book validation (bad level, bad ordering, crossed book).
+
+    Callers ingesting live data may catch this, log it, and skip the snapshot.
+    Mistakes in our own code (wrong types, naive timestamps, empty ids) raise
+    TypeError or plain ValueError instead, so they are never skipped silently.
+    """
+
+
 @dataclass(frozen=True, slots=True)
 class Level:
     """One price level: `size` contracts resting at `price` dollars."""
@@ -24,11 +33,11 @@ class Level:
             if not isinstance(value, Decimal):
                 raise TypeError(f"Level.{name} must be Decimal, got {type(value).__name__}")
             if not value.is_finite():
-                raise ValueError(f"Level.{name} must be finite, got {value}")
+                raise InvalidOrderBook(f"Level.{name} must be finite, got {value}")
         if not _ZERO < self.price < _ONE:
-            raise ValueError(f"Level.price must be strictly between 0 and 1, got {self.price}")
+            raise InvalidOrderBook(f"Level.price must be strictly between 0 and 1, got {self.price}")
         if self.size <= _ZERO:
-            raise ValueError(f"Level.size must be positive, got {self.size}")
+            raise InvalidOrderBook(f"Level.size must be positive, got {self.size}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,18 +73,18 @@ class OrderBook:
 
         for better, worse in zip(self.bids, self.bids[1:]):
             if not better.price > worse.price:
-                raise ValueError(
+                raise InvalidOrderBook(
                     f"bids must be strictly descending by price: {better.price} then {worse.price}"
                 )
         for better, worse in zip(self.asks, self.asks[1:]):
             if not better.price < worse.price:
-                raise ValueError(
+                raise InvalidOrderBook(
                     f"asks must be strictly ascending by price: {better.price} then {worse.price}"
                 )
 
         # A bid at or above the ask would have matched on the venue, so the snapshot is inconsistent.
         if self.bids and self.asks and self.bids[0].price >= self.asks[0].price:
-            raise ValueError(
+            raise InvalidOrderBook(
                 f"book is crossed or locked: best bid {self.bids[0].price} >= best ask {self.asks[0].price}"
             )
 
