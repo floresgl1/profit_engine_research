@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 from collections import Counter
 from datetime import timedelta
 from decimal import Decimal
@@ -58,6 +59,12 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         print("Nothing to ingest: pass --kalshi-series and/or --polymarket-top.", file=sys.stderr)
         return 2
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    maker_series = [s.strip() for s in (args.maker_series or "").split(",") if s.strip()]
+    if maker_series:
+        if Path(args.maker_db).resolve() == Path(args.db).resolve():
+            print("--maker-db must be a different file from --db", file=sys.stderr)
+            return 2
+        start_maker_thread(args.maker_db, maker_series, args.maker_interval)
     store = Store(args.db)
     models = [MidpointBaseline()]
     for params_path in args.temperature_params or []:
@@ -116,29 +123,47 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_make(args: argparse.Namespace) -> int:
+def run_maker(db: str, series: list[str], interval: float, cycles: int | None = None, size: str = "10",
+              max_position: str = "50", maker_fee: str = "0.0175", strategy: str = "join_touch_v1") -> None:
+    """Run the paper market maker until `cycles` ticks or Ctrl-C. Opens its own database connection."""
     from profit_engine.maker.quoter import QuoterConfig
     from profit_engine.maker.runner import MakerRunner, RunnerConfig
 
+    Path(db).parent.mkdir(parents=True, exist_ok=True)
+    store = Store(db)
+    runner = MakerRunner(
+        KalshiSource(ReadOnlyHttp(KALSHI_URL), series),
+        store,
+        QuoterConfig(size=Decimal(size), max_position=Decimal(max_position), maker_fee_rate=Decimal(maker_fee)),
+        RunnerConfig(strategy=strategy, interval=timedelta(seconds=interval)),
+    )
+    logging.info("paper market maker %s on %s (no orders are ever placed)", strategy, ",".join(series))
+    try:
+        runner.run_forever(cycles=cycles)
+    finally:
+        store.close()
+
+
+def start_maker_thread(db: str, series: list[str], interval: float) -> threading.Thread:
+    """The maker beside the ingest loop, in one process (one always-on task).
+
+    Its own thread, HTTP client and database file, so neither loop can block
+    or lock the other; a daemon thread, so it stops with the process.
+    """
+    thread = threading.Thread(target=run_maker, args=(db, series, interval), name="maker", daemon=True)
+    thread.start()
+    return thread
+
+
+def cmd_make(args: argparse.Namespace) -> int:
     series = [s.strip() for s in (args.kalshi_series or "").split(",") if s.strip()]
     if not series:
         print("pass --kalshi-series", file=sys.stderr)
         return 2
-    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
-    store = Store(args.db)
-    runner = MakerRunner(
-        KalshiSource(ReadOnlyHttp(KALSHI_URL), series),
-        store,
-        QuoterConfig(size=Decimal(args.size), max_position=Decimal(args.max_position), maker_fee_rate=Decimal(args.maker_fee)),
-        RunnerConfig(strategy=args.strategy, interval=timedelta(seconds=args.interval)),
-    )
-    logging.info("paper market maker %s on %s (no orders are ever placed)", args.strategy, ",".join(series))
     try:
-        runner.run_forever(cycles=args.cycles)
+        run_maker(args.db, series, args.interval, args.cycles, args.size, args.max_position, args.maker_fee, args.strategy)
     except KeyboardInterrupt:
         logging.info("stopped")
-    finally:
-        store.close()
     return 0
 
 
@@ -222,6 +247,9 @@ def parser() -> argparse.ArgumentParser:
         "(research/temperature_params.json = v1 NBM, research/temperature_params_lamp.json = v2 LAMP)",
     )
     ing.add_argument("--trade-model", default="midpoint", help="which model's predictions drive paper trades")
+    ing.add_argument("--maker-series", help="also run the paper market maker on these Kalshi series, in this process")
+    ing.add_argument("--maker-db", default="data/maker.db", help="paper market maker database (default data/maker.db)")
+    ing.add_argument("--maker-interval", type=float, default=10, help="paper market maker seconds between ticks (default 10)")
     ing.set_defaults(func=cmd_ingest)
 
     score = sub.add_parser("score", help="Brier scores and calibration, model vs market")
