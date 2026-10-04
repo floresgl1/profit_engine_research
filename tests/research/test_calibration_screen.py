@@ -7,7 +7,7 @@ from calibration_screen import Row, Settled, band_of, clustered_mean, fee, parse
 
 
 def row(bid, ask, result, multiplier="1"):
-    return Row("T", "E", "Sports", False, D(bid), D(ask), result, D(multiplier))
+    return Row("T", "E", "E", "Sports", False, D(bid), D(ask), result, D(multiplier))
 
 
 def test_fee_and_strategy_pnl_hand_computed():
@@ -51,3 +51,12 @@ def test_sample_caps_per_series_and_filters():
     picks = sample(ms, per_series=5)
     assert len(picks) == 5 and all(series_of(m.event) == "KXA" for m in picks)
     assert picks == sample(ms, per_series=5)  # seeded
+
+
+def test_holdout_split_is_stable_and_roughly_half():
+    from calibration_screen import is_holdout
+
+    events = [f"KXA-{i}" for i in range(2000)]
+    share = sum(is_holdout(e) for e in events) / len(events)
+    assert 0.45 < share < 0.55
+    assert [is_holdout(e) for e in events] == [is_holdout(e) for e in events]

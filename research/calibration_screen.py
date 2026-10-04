@@ -8,17 +8,19 @@ systematically off (e.g. the favourite-longshot bias: cheap contracts win
 less often than their price says) is an edge without any model.
 
 Data (read-only, cached in data/screen/):
-1. Every settled market closing in the screen period, from GET /markets
-   (status=settled) and GET /historical/markets (archived), combos excluded.
+1. The newest page (up to 1,000) of settled markets of every series from
+   GET /historical/markets, closing Jan 2025 to the archive cutoff. Busy
+   series therefore contribute only their latest weeks or hours.
 2. Series categories and fee multipliers from GET /series.
 3. Sample: markets with volume >= MIN_VOLUME that opened at least a day
    before close, up to PER_SERIES per series (seeded random).
 4. Hourly candles around close - 24h; the candle that closed at or before
    that time gives bid/ask. Markets without both sides are dropped.
 
-Statistics are clustered by event: buckets of one event share an outcome
-(only one wins), so markets are not independent. The first DISCOVERY_MONTHS
-are for finding effects, the rest is a holdout to confirm them.
+Statistics are clustered by series and close date: buckets of one event
+share an outcome, and a series' events on one day often share a driver
+(e.g. hourly Bitcoin ladders), so markets are not independent. Events are
+split into disjoint discovery and holdout halves by ticker hash.
 
 Run: uv run python research/calibration_screen.py --out research/calibration_screen.md
 """
@@ -26,6 +28,7 @@ Run: uv run python research/calibration_screen.py --out research/calibration_scr
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import os
 import pickle
@@ -38,12 +41,11 @@ from pathlib import Path
 
 from profit_engine.weather.kalshi_temps import Quote, quote_at
 
-START = datetime(2025, 10, 1, tzinfo=timezone.utc)
-END = datetime(2026, 10, 1, tzinfo=timezone.utc)
-SPLIT = datetime(2026, 6, 1, tzinfo=timezone.utc)  # discovery before, holdout after
+START = datetime(2025, 1, 1, tzinfo=timezone.utc)
+END = datetime(2026, 8, 4, tzinfo=timezone.utc)  # archive cutoff: the archive is listable per series
 HORIZON = timedelta(hours=24)
 MIN_VOLUME = Decimal(500)
-PER_SERIES = 15
+PER_SERIES = 6
 BASE_FEE = Decimal("0.07")
 CACHE = "data/screen"
 BANDS = [(0, 5), (5, 10), (10, 20), (20, 35), (35, 50), (50, 65), (65, 80), (80, 90), (90, 95), (95, 100)]
@@ -55,6 +57,11 @@ def ts(s: str) -> datetime:
 
 def series_of(event_ticker: str) -> str:
     return event_ticker.split("-", 1)[0]
+
+
+def is_holdout(event_ticker: str) -> bool:
+    """Stable half of all events, by hash: discovery and holdout are disjoint sets of events."""
+    return int(hashlib.sha256(event_ticker.encode()).hexdigest()[:8], 16) % 2 == 1
 
 
 def fee(price: Decimal, multiplier: Decimal, contracts: int = 100) -> Decimal:
@@ -104,52 +111,26 @@ def _save(name: str, data) -> None:
     os.replace(tmp, f"{CACHE}/{name}.pkl")
 
 
-def list_settled(http) -> list[Settled]:
-    """All settled binary markets closing in [START, END), live and archived listings."""
-    state = _load("listing", {"markets": {}, "live_done": False, "hist_cursor": None, "hist_done": False})
+def list_settled(http, series: dict[str, dict]) -> list[Settled]:
+    """Settled binary markets closing in [START, END): the newest archive page of every series.
+
+    Listing everything is not feasible (about 77,000 markets settle per day),
+    so busy series contribute only their most recent weeks or hours.
+    """
+    state = _load("listing", {"markets": {}, "done": set()})
     markets: dict[str, Settled] = state["markets"]
-
-    def page(path: str, params: dict) -> tuple[list[dict], str | None]:
-        data = http.get_json(path, params)
-        return data.get("markets") or [], data.get("cursor") or None
-
-    def keep(raw: list[dict]) -> None:
+    todo = [s for s in sorted(series) if s not in state["done"]]
+    for i, name in enumerate(todo):
+        raw = http.get_json("/historical/markets", {"series_ticker": name, "limit": "1000"}).get("markets") or []
         for m in raw:
-            s = parse_market(m)
-            if s and START <= s.close_time < END:
-                markets[s.ticker] = s
-
-    if not state["live_done"]:
-        params = {"status": "settled", "mve_filter": "exclude", "limit": "1000",
-                  "min_close_ts": str(int(START.timestamp())), "max_close_ts": str(int(END.timestamp()))}  # fmt: skip
-        cursor, n = None, 0
-        while True:
-            raw, cursor = page("/markets", dict(params, **({"cursor": cursor} if cursor else {})))
-            keep(raw)
-            n += 1
-            if n % 50 == 0:
-                print(f"  live listing: {n} pages, {len(markets)} markets", flush=True)
-            if not cursor or not raw:
-                break
-        state["live_done"] = True
-        _save("listing", state)
-    if not state["hist_done"]:
-        cursor, n = state["hist_cursor"], 0
-        while True:
-            params = {"mve_filter": "exclude", "limit": "1000", **({"cursor": cursor} if cursor else {})}
-            raw, cursor = page("/historical/markets", params)
-            keep(raw)
-            n += 1
-            closes = [ts(m["close_time"]) for m in raw if m.get("close_time")]
-            if n % 25 == 0:
-                state["hist_cursor"] = cursor
-                _save("listing", state)
-                print(f"  archive listing: {n} pages, {len(markets)} markets, back to {min(closes, default=None)}", flush=True)
-            # The archive lists newest first; stop once a whole page closed before START.
-            if not cursor or not raw or (closes and max(closes) < START):
-                break
-        state["hist_done"] = True
-        _save("listing", state)
+            settled = parse_market(m)
+            if settled and START <= settled.close_time < END:
+                markets[settled.ticker] = settled
+        state["done"].add(name)
+        if i % 500 == 499:
+            _save("listing", state)
+            print(f"  listing: {i + 1} of {len(todo)} series, {len(markets)} markets", flush=True)
+    _save("listing", state)
     return list(markets.values())
 
 
@@ -201,6 +182,7 @@ def fetch_quotes(http, picks: list[Settled]) -> dict[str, Quote | None]:
 class Row:
     ticker: str
     event: str
+    cluster: str  # series + close date: markets that share an outcome driver
     category: str
     holdout: bool
     bid: Decimal
@@ -236,7 +218,8 @@ def build_rows(picks: list[Settled], quotes: dict, series: dict) -> tuple[list[R
         elif info is None or info["fee_type"] not in ("quadratic", "quadratic_with_maker_fees") or info["fee_multiplier"] is None:
             dropped["fee not modelled"] += 1
         else:
-            rows.append(Row(m.ticker, m.event, info["category"], m.close_time >= SPLIT, q.bid, q.ask, m.result,
+            cluster = f"{series_of(m.event)}|{m.close_time.date()}"
+            rows.append(Row(m.ticker, m.event, cluster, info["category"], is_holdout(m.event), q.bid, q.ask, m.result,
                             Decimal(str(info["fee_multiplier"]))))  # fmt: skip
     return rows, dict(dropped)
 
@@ -279,7 +262,7 @@ class Cell:
 
 
 def cell(rows: list[Row]) -> Cell:
-    ev = [r.event for r in rows]
+    ev = [r.cluster for r in rows]
     yes, yes_se = clustered_mean([float(r.result) for r in rows], ev)
     by, by_se = clustered_mean([float(r.buy_yes) for r in rows], ev)
     bn, bn_se = clustered_mean([float(r.buy_no) for r in rows], ev)
@@ -321,9 +304,9 @@ def report(rows: list[Row], dropped: dict, n_listed: int, n_sampled: int) -> str
     out.append(f"Settled binary markets closing {START:%Y-%m-%d} to {END:%Y-%m-%d}: {n_listed} listed, "
                f"{n_sampled} sampled (volume >= {MIN_VOLUME}, up to {PER_SERIES} per series), {len(rows)} with a two-sided "
                f"quote {HORIZON.total_seconds() / 3600:.0f} h before close. Dropped: {dropped}.")  # fmt: skip
-    out.append(f"Discovery: close before {SPLIT:%Y-%m-%d} ({len(disc)} markets); holdout: after ({len(hold)}).")
-    out.append("Won = realized YES rate. Strategy columns: mean PnL per contract after fees ± event-clustered SE. "
-               "Flag = profitable by more than 2 SE (n >= 30).")
+    out.append(f"Discovery and holdout: disjoint halves of events by ticker hash ({len(disc)} / {len(hold)} markets).")
+    out.append("Won = realized YES rate. Strategy columns: mean PnL per contract after fees ± SE clustered by "
+               "series and close date. Flag = profitable by more than 2 SE (n >= 30). Events column = clusters.")
     out.append("")
     out += ["## All categories", ""] + table(disc, "Discovery") + table(hold, "Holdout")
     out += ["## By category (discovery)", ""]
@@ -364,7 +347,7 @@ def main() -> None:
     args = p.parse_args()
     http = ReadOnlyHttp(KALSHI_URL, min_interval=0.3)
     series = load_series(http)
-    markets = list_settled(http)
+    markets = list_settled(http, series)
     print(f"{len(markets)} settled binary markets listed", flush=True)
     picks = sample(markets)
     print(f"{len(picks)} sampled", flush=True)
