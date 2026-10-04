@@ -144,3 +144,94 @@ def predict_high(
     if observed_max is not None:
         dist = dist.at_least(floor_from_observations(observed_max, low_band))
     return dist
+
+
+# --- v2: high = max(already observed, still to come) -------------------------------------------
+
+# Official high minus max observation (rounded), days per value, from research/day_window.md
+# (2021-2026, days where the day window cannot matter).
+UNDERCOUNT_DST = {-1: 3, 0: 324, 1: 489, 2: 100, 3: 13}
+UNDERCOUNT_STANDARD = {-2: 4, -1: 13, 0: 325, 1: 228, 2: 22, 3: 8, 4: 5, 5: 2}
+
+
+def _round_half_up(x: float) -> int:
+    return math.floor(x + 0.5)
+
+
+def observed_part(observed_max: float, undercount: dict[int, int]) -> dict[int, float]:
+    """Distribution of the official max over the hours already observed."""
+    total = sum(undercount.values())
+    base = _round_half_up(observed_max)
+    return {base + u: n / total for u, n in undercount.items()}
+
+
+def max_of(parts: list[dict[int, float]]) -> HighDistribution:
+    """Distribution of the max of independent integer variables: CDF of the max = product of CDFs."""
+    support = range(min(min(p) for p in parts), max(max(p) for p in parts) + 1)
+
+    def cdf(p: dict[int, float], h: int) -> float:
+        return sum(q for v, q in p.items() if v <= h)
+
+    probs, previous = {}, 0.0
+    for h in support:
+        joint = math.prod(cdf(p, h) for p in parts)
+        if joint - previous > 0:
+            probs[h] = joint - previous
+        previous = joint
+    total = sum(probs.values())
+    return HighDistribution({h: p / total for h, p in probs.items()})
+
+
+@dataclass(frozen=True)
+class RemainingMaxModel:
+    """H = max(M, F): M from today's readings and the undercount, F ~ round(Normal(lamp_max + bias, sigma)).
+
+    `lamp_max` is LAMP's highest hourly forecast for the rest of the day.
+    Either part may be missing: no readings yet (before 01:00), or no
+    hours left to forecast.
+    """
+
+    bias: float
+    sigma: float
+
+    def distribution(self, observed_max: float | None, lamp_max: float | None, dst: bool) -> HighDistribution:
+        parts = []
+        if observed_max is not None:
+            parts.append(observed_part(observed_max, UNDERCOUNT_DST if dst else UNDERCOUNT_STANDARD))
+        if lamp_max is not None:
+            parts.append(HighDistribution.rounded_normal(lamp_max + self.bias, self.sigma).probs)
+        if not parts:
+            raise ValueError("need observations or a forecast")
+        return max_of(parts)
+
+    @classmethod
+    def fit(
+        cls,
+        cases: list[tuple[float | None, float | None, int, bool]],
+        biases: list[float] | None = None,
+        sigmas: list[float] | None = None,
+    ) -> RemainingMaxModel:
+        """Grid-search maximum likelihood over (bias, sigma).
+
+        cases: (observed_max, lamp_max, actual_high, dst) per training day.
+        """
+        biases = biases or [b / 4 for b in range(-8, 21)]  # -2.0 .. 5.0
+        sigmas = sigmas or [s / 4 for s in range(2, 25)]  # 0.5 .. 6.0
+        usable = [c for c in cases if c[1] is not None]
+        if len(usable) < 10:
+            raise ValueError("need at least 10 cases with a forecast")
+        best, best_ll = None, -math.inf
+        for b in biases:
+            for s in sigmas:
+                model = cls(b, s)
+                ll = sum(math.log(max(model.distribution(o, f, d).probs.get(h, 0.0), 1e-9)) for o, f, h, d in usable)
+                if ll > best_ll:
+                    best, best_ll = model, ll
+        return best
+
+    def to_dict(self) -> dict[str, float]:
+        return {"bias": self.bias, "sigma": self.sigma}
+
+    @classmethod
+    def from_dict(cls, d: dict[str, float]) -> RemainingMaxModel:
+        return cls(bias=d["bias"], sigma=d["sigma"])

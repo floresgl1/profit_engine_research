@@ -6,9 +6,12 @@ import pytest
 
 from profit_engine.models.temperature import (
     HighDistribution,
+    RemainingMaxModel,
     SpreadModel,
     bucket_probabilities,
     floor_from_observations,
+    max_of,
+    observed_part,
     predict_high,
 )
 from profit_engine.weather.kalshi_temps import Bucket
@@ -132,3 +135,40 @@ class TestSpreadModel:
             SpreadModel(bias=0.0)
         with pytest.raises(ValueError):
             SpreadModel(bias=0.0, sigma=1.0, k=1.0)
+
+
+class TestRemainingMax:
+    def test_observed_part_uses_undercount(self):
+        # reading 68.6 rounds to 69; DST undercount counts -1:3, 0:324, 1:489, 2:100, 3:13 (929 days)
+        p = observed_part(68.6, {-1: 3, 0: 324, 1: 489, 2: 100, 3: 13})
+        assert p[70] == pytest.approx(489 / 929) and p[68] == pytest.approx(3 / 929)
+
+    def test_max_of_hand_computed(self):
+        # M: 70 or 71 (0.5 each); F: 69, 70, 71, 72 (0.25 each)
+        # P(H<=69)=0, P(H<=70)=0.5*0.5=0.25, P(H<=71)=1*0.75=0.75, P(H<=72)=1
+        d = max_of([{70: 0.5, 71: 0.5}, {69: 0.25, 70: 0.25, 71: 0.25, 72: 0.25}])
+        assert d.probs == pytest.approx({70: 0.25, 71: 0.5, 72: 0.25})
+
+    def test_no_hours_left_means_observed_only(self):
+        m = RemainingMaxModel(bias=1.0, sigma=1.0)
+        d = m.distribution(observed_max=75.0, lamp_max=None, dst=True)
+        assert min(d.probs) == 74 and max(d.probs) == 78  # 75 + undercount -1..+3
+
+    def test_no_readings_means_forecast_only(self):
+        m = RemainingMaxModel(bias=1.0, sigma=1.0)
+        assert m.distribution(None, 70.0, dst=True).mean() == pytest.approx(71.0, abs=1e-6)
+
+    def test_warm_forecast_dominates_cool_morning(self):
+        # 10:00 reading 65 but afternoon forecast 80: the observed part barely matters.
+        m = RemainingMaxModel(bias=0.0, sigma=1.0)
+        assert m.distribution(65.0, 80.0, dst=True).mean() == pytest.approx(80.0, abs=0.01)
+
+    def test_fit_recovers_bias(self):
+        # Forecast-only cases where the high is always forecast + 2 (spread around it by +/-1).
+        cases = [(None, 70.0, 72 + (i % 3) - 1, True) for i in range(60)]
+        m = RemainingMaxModel.fit(cases, biases=[0.0, 1.0, 2.0, 3.0], sigmas=[0.5, 1.0, 2.0])
+        assert m.bias == pytest.approx(2.0, abs=0.25)
+
+    def test_round_trip(self):
+        m = RemainingMaxModel(bias=1.25, sigma=2.0)
+        assert RemainingMaxModel.from_dict(m.to_dict()) == m

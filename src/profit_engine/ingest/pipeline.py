@@ -17,7 +17,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from profit_engine.core import InvalidOrderBook, Market, MarketStatus, Outcome, Prediction, utc_now
+from profit_engine.core import (
+    InvalidOrderBook,
+    Market,
+    MarketStatus,
+    Outcome,
+    Prediction,
+    utc_now,
+)
 from profit_engine.ingest.monitor import SkipMonitor
 from profit_engine.models import Model
 from profit_engine.paper import EdgeStrategy, PaperTrader

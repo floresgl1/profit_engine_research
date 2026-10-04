@@ -26,11 +26,13 @@ from profit_engine.models.temperature import (
     LOW_BAND_DST,
     LOW_BAND_STANDARD,
     HighDistribution,
+    RemainingMaxModel,
     SpreadModel,
     predict_high,
 )
 from profit_engine.weather.iem import CENTRAL_PARK, IemAsosClient, drop_spikes
 from profit_engine.weather.kalshi_temps import Bucket, event_day
+from profit_engine.weather.lamp import LampClient
 from profit_engine.weather.nbm import NbmClient, NbmRun
 from profit_engine.weather.windows import is_dst
 
@@ -154,3 +156,64 @@ class KalshiHighTemperature:
     @staticmethod
     def _low_band(target: date) -> float:
         return LOW_BAND_DST if is_dst(target, NY) else LOW_BAND_STANDARD
+
+
+class KalshiHighTemperatureLamp(KalshiHighTemperature):
+    """v2: high = max(observed so far, LAMP's max over the rest of the day); see RemainingMaxModel.
+
+    Uses the newest LAMP run available now (re-issued hourly), so it keeps
+    updating through the target day.
+    """
+
+    name = "kxhigh_lamp"
+
+    def __init__(
+        self,
+        leads: dict[str, RemainingMaxModel],
+        lead_times: dict[str, tuple[int, int]],
+        lamp: LampClient,
+        iem: IemAsosClient,
+        series: str = "KXHIGHNY",
+        now: Callable[[], datetime] = utc_now,
+        refresh: timedelta = timedelta(minutes=10),
+    ) -> None:
+        self.leads = leads
+        self.lead_times = lead_times
+        self.lamp = lamp
+        self.iem = iem
+        self.series = series
+        self._now = now
+        self._refresh = refresh
+        self._dists = {}
+
+    @classmethod
+    def from_file(cls, path: str | Path, lamp: LampClient, iem: IemAsosClient, **kwargs) -> KalshiHighTemperatureLamp:
+        raw = json.loads(Path(path).read_text())
+        if raw.get("model") != "lamp":
+            raise ValueError(f"{path} is not a LAMP model parameter file")
+        leads = {k: RemainingMaxModel.from_dict(v) for k, v in raw["leads"].items()}
+        return cls(leads, {k: tuple(v) for k, v in raw["lead_times"].items()}, lamp, iem, **kwargs)
+
+    def _build(self, target: date, now: datetime) -> HighDistribution | None:
+        day_start = datetime.combine(target, time(1), tzinfo=NY).astimezone(timezone.utc)
+        day_end = datetime.combine(target + timedelta(days=1), time(0), tzinfo=NY).astimezone(timezone.utc)
+        if now >= day_end:
+            return None  # day over; the outcome is out of the model's hands
+        run = self.lamp.latest_run(now, until=day_end + timedelta(hours=1))
+        if run is None:
+            log.info("%s: no LAMP run covering %s", self.name, target)
+            return None
+        start = max(now, day_start)
+        remaining = run.max_between(start, day_end)
+        observed = self._observed_max(target, now)
+        if observed is None and remaining is None:
+            return None
+        expected_high = max(x for x in (observed, remaining) if x is not None)
+        # The two hours the candidate day windows disagree on: 00:00-01:00 local at each end of the day.
+        for midnight in (day_start - timedelta(hours=1), day_end):
+            near = run.max_between(midnight, midnight + timedelta(hours=1))
+            if near is not None and near >= expected_high - MIDNIGHT_MARGIN:
+                log.info("%s: abstaining on %s, a midnight hour is forecast near the high", self.name, target)
+                return None
+        lead = TemperatureParams(variant="lamp", leads={}, lead_times=self.lead_times).lead_for(target, now.astimezone(NY))
+        return self.leads[lead].distribution(observed, remaining, is_dst(target, NY))

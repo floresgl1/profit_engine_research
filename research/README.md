@@ -95,3 +95,40 @@ shrinks with the hours left in the day, and recalibrating the
 distribution's tails against the training period.
 
 Rerun (cached data in `data/`): `uv run python research/temperature_backtest.py`
+
+## Temperature model v2: LAMP, max of observed and remaining (`temperature_backtest_v2.py`)
+
+**Change from v1.** The high is modelled as max(M, F): M = the official max
+of the hours already observed (rounded reading + the measured undercount
+distribution), F = GFS LAMP's highest hourly forecast for the rest of the
+day + fitted bias, with fitted spread. LAMP is re-issued hourly, so the
+same-day leads get a fresh forecast (NBM stops forecasting the day once it
+starts). Same training/test split, cached data and identical rows as v1.
+
+**Result** (`temperature_backtest_v2.md`): **much better than v1, still worse
+than the market at every lead.**
+
+| Lead | v1 skill | v2 skill | v2 bias / sigma °F |
+|---|---|---|---|
+| Day before, 16:00 | -0.18 | -0.13 | +1.25 / 2.50 |
+| Same day, 10:00 | -0.31 | -0.16 | +0.75 / 2.00 |
+| Same day, 14:00 | -0.97 | -0.34 | -0.25 / 2.00 |
+| All | -0.39 | -0.18 | |
+
+Log score of the realized high improves at every lead (all: -2.28 to
+-1.91). Calibration is now close (e.g. predicted 0.26, happened 0.26);
+the remaining gap is sharpness, not bias: the market concentrates
+probability on the right bucket more often.
+
+**Reading it.**
+- The backtest uses only the 00/06/12/18Z LAMP runs the archive keeps,
+  so at 14:00 it uses the 12Z run; live runs are hourly and fresher, so
+  live results should be somewhat better than this.
+- Sigma is fixed per lead. It should depend on hours left in the day and
+  on the weather regime (fronts, convection).
+- Still no edge: keep logging, don't trade it.
+
+**Next to try, same backtest:** a sigma that shrinks with hours left;
+the latest observed temperature and its trend (not just the max); bucket
+probabilities recalibrated on training data (isotonic); more cities for
+more training data.

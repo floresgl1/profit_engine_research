@@ -154,3 +154,14 @@ and to store.
 | Observations | Floor = floor(max spike-checked reading - 0.8°F in DST / 2.2°F otherwise), then cut and rescale | Ignore; hard floor at the reading | Rounding down keeps a still-possible bucket alive. |
 | Abstain | When NBM's hourly forecast puts a midnight hour within 2°F of the high | Always predict | Day window unknown (research/day_window.md). |
 | Trading | **Not** used for paper trading; predictions logged only | Trade it | Backtest: Brier skill vs market -0.18 to -0.97 (research/README.md). |
+
+## Temperature model v2
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Same-day forecast | GFS LAMP hourly (IEM archive `LAV`), newest run available (runtime + 1 h) | Keep NBM | NBM drops the current day once its max period starts; LAMP is re-issued hourly. |
+| Model structure | H = max(observed part, remaining part); CDF of max = product of CDFs | Floor-and-renormalize (v1) | Uses where the day stands, not just a lower bound; backtest skill at 14:00 went from -0.97 to -0.34. |
+| Observed part | Rounded max reading + empirical undercount distribution (day-window calibration) | Fixed floor | Measured, not assumed. |
+| Fit | Grid-search maximum likelihood of bias and sigma per lead | Moment estimates | The max of two parts has no simple residual to take moments of. |
+| Midnight abstain | Exact disputed hours (00:00-01:00 local at both ends) vs the expected high | +/- 2 h window | The wider window wrongly included 01:00, a normal hour (caught by a test). |
+| Trading | Not traded; logged next to v1 and the market | Trade | Backtest skill still negative at every lead. |
