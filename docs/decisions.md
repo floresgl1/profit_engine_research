@@ -142,3 +142,15 @@ and to store.
 | Calibration variants | Report both all-season and DST-only bands | Pick one | Which one is right is a judgment call; neither produced a qualifying date, so the conclusion doesn't depend on it. |
 | Method check | Run the same test on ACIS (known LST) before trusting it on TWC | Skip | A method that can't recover a known answer can't be trusted on an unknown one. It couldn't (no qualifying dates), which is itself the finding. |
 | Code placement | Reusable clients in `src/profit_engine/weather/`; one-off analysis in `research/` | Everything in `research/` | The temperature model will need the same clients and window definitions. |
+
+## Temperature model (KXHIGHNY)
+
+| Decision | Choice | Alternatives | Why |
+|---|---|---|---|
+| Model shape | One distribution over the integer high per event; every bucket priced from it | Six independent bucket models | Buckets always sum to 1; one model serves any strike layout. |
+| Forecast | NBM ("NBS") daily max `txn` and spread `xnd` from IEM's as-issued archive | GFS MOS; NWS point forecast | NBM is the blend; `xnd` gives a per-day spread; same product live and in training. |
+| Point-in-time | A run counts only from runtime + 2 h; same-day leads use the newest run that still forecasts the day (NBM drops the current day once its max period starts) | Use runtime as availability | No forecast used before it was published. |
+| Spread | Bias + `k * max(xnd, 1)` per lead time, chosen over a fixed sigma on held-out log score | Fixed sigma | Better held-out log score (-2.28 vs -2.34). |
+| Observations | Floor = floor(max spike-checked reading - 0.8°F in DST / 2.2°F otherwise), then cut and rescale | Ignore; hard floor at the reading | Rounding down keeps a still-possible bucket alive. |
+| Abstain | When NBM's hourly forecast puts a midnight hour within 2°F of the high | Always predict | Day window unknown (research/day_window.md). |
+| Trading | **Not** used for paper trading; predictions logged only | Trade it | Backtest: Brier skill vs market -0.18 to -0.97 (research/README.md). |

@@ -131,7 +131,7 @@ class KalshiHighTemperature:
         return dist
 
     def _build(self, target: date, now: datetime) -> HighDistribution | None:
-        run = self.nbm.latest_run(now)
+        run = self.nbm.latest_run(now, target=target)
         forecast = run.maxima.get(target) if run else None
         if forecast is None:
             log.info("%s: no NBM forecast for %s", self.name, target)

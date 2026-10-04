@@ -86,8 +86,15 @@ class NbmClient:
                 self._cache[runtime] = None
         return self._cache[runtime]
 
-    def latest_run(self, at: datetime, lookback: timedelta = timedelta(hours=30)) -> NbmRun | None:
-        """Most recent archived run that was available (runtime + lag) at `at`."""
+    def latest_run(
+        self, at: datetime, lookback: timedelta = timedelta(hours=30), target: date | None = None
+    ) -> NbmRun | None:
+        """Most recent archived run that was available (runtime + lag) at `at`.
+
+        With `target`, the most recent such run that still forecasts that day's
+        max: runs issued after the daytime max period has started drop the
+        current day, so on the day itself this is usually the overnight run.
+        """
         newest = at - AVAILABILITY_LAG
         day = newest.date()
         candidates = []
@@ -99,6 +106,6 @@ class NbmClient:
             day -= timedelta(days=1)
         for runtime in sorted(candidates, reverse=True):
             run = self.run(runtime)
-            if run is not None:
+            if run is not None and (target is None or target in run.maxima):
                 return run
         return None

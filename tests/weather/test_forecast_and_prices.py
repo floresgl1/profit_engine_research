@@ -52,6 +52,21 @@ class TestNbm:
         # At 14:00Z the 12Z run becomes usable.
         assert client.latest_run(utc(2026, 10, 1, 14)).runtime == utc(2026, 10, 1, 12)
 
+    def test_latest_run_with_target_skips_runs_without_that_day(self):
+        # The 12Z run no longer forecasts Oct 1 (its daytime max period has begun); the 06Z run still does.
+        def handler(request):
+            runtime = request.url.params["runtime"]
+            if runtime == "2026-10-01T12:00Z":
+                return httpx.Response(200, json={"data": [{"ftime": "2026-10-03 00:00", "txn": 82.0, "xnd": 1.0}]})
+            if runtime == "2026-10-01T06:00Z":
+                return httpx.Response(200, json=NBS_ROWS)
+            return httpx.Response(200, json={"data": []})
+
+        client = NbmClient(ReadOnlyHttp("https://iem.test", transport=httpx.MockTransport(handler), min_interval=0))
+        at = utc(2026, 10, 1, 15)
+        assert client.latest_run(at).runtime == utc(2026, 10, 1, 12)
+        assert client.latest_run(at, target=date(2026, 10, 1)).runtime == utc(2026, 10, 1, 6)
+
     def test_404_means_missing(self):
         def handler(request):
             return httpx.Response(404, json={"detail": "no data"})

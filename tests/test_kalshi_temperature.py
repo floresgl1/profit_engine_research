@@ -64,7 +64,7 @@ class FakeNbm:
         self.nbm_run = nbm_run
         self.calls = 0
 
-    def latest_run(self, at):
+    def latest_run(self, at, target=None):
         self.calls += 1
         return self.nbm_run
 

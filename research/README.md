@@ -50,3 +50,48 @@ are dropped; both problems showed up in the first run.
   date decides it. Asking Kalshi support directly is the cheaper route.
 
 Rerun: `uv run python research/day_window.py --out research/day_window.md`
+
+## Temperature model backtest (`temperature_backtest.py`)
+
+**Question.** Does the NBM-based model (`models/kalshi_temperature.py`) price
+KXHIGHNY buckets better than the market?
+
+**Method.** Fit bias and spread per lead time (16:00 the day before, 10:00
+and 14:00 on the day) on Aug 2024 to Jul 2025. Score on Aug 2025 to Oct
+2026 against the market midpoint from the last hourly candle that closed
+before each decision time, on identical rows. Inputs at each decision time
+are only the NBM run available by then (2-hour publication lag) and
+observations before then.
+
+**Result** (`temperature_backtest.md`): **no edge; the market is clearly
+better at every lead.**
+
+| Lead | Model Brier | Market Brier | Skill vs market |
+|---|---|---|---|
+| Day before, 16:00 | 0.141 | 0.120 | -0.18 |
+| Same day, 10:00 | 0.176 | 0.134 | -0.31 |
+| Same day, 14:00 | 0.235 | 0.119 | -0.97 |
+
+(sigma scaled by NBM's `xnd`, which beat a fixed sigma on held-out log score.)
+
+**Why, as far as the data shows:**
+
+1. **No new forecast on the day.** NBM runs stop forecasting the current
+   day once its daytime max period starts, so the 10:00 and 14:00 leads use
+   the overnight run: the spread barely shrinks (2.63 to 2.51°F) while the
+   market keeps updating.
+2. **Observations are used only as a floor.** By 14:00 the market prices
+   the trajectory (still rising, already peaked, front arriving); the model
+   only knows "at least the max so far".
+3. **Calibration.** The market is well calibrated; the model under-predicts
+   most buckets (e.g. predicted 0.24, happened 0.29), so its spread or
+   centre is off for the buckets that are actually contested.
+
+**What it means.** Do not paper trade this model (`--trade-model
+kxhigh_nbm`); log its predictions to keep measuring, that's all.
+Promising next steps, each testable with the same backtest: hourly
+forecast and observation trajectory for same-day leads, a sigma that
+shrinks with the hours left in the day, and recalibrating the
+distribution's tails against the training period.
+
+Rerun (cached data in `data/`): `uv run python research/temperature_backtest.py`

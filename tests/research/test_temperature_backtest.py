@@ -38,7 +38,7 @@ def test_build_cases_uses_run_available_at_decision_time():
     run = NbmRun(utc(2026, 9, 27, 12), {DAY: MaxForecast(DAY, utc(2026, 9, 27, 12), 70.0, 2.0)})
     seen = []
 
-    def latest(at):
+    def latest(at, day):
         seen.append(at)
         return run
 

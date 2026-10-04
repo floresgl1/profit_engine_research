@@ -80,7 +80,7 @@ def build_cases(days, leads, nbm_latest: Callable, obs, outcomes, settled_by_day
             continue
         for lead in leads:
             at = decision_time(day, lead)
-            run = nbm_latest(at)
+            run = nbm_latest(at, day)
             forecast = run.maxima.get(day) if run else None
             if forecast is None:
                 continue
@@ -185,11 +185,11 @@ def load(start: date, end: date, test_start: date, cache: str | None):
     nbm = NbmClient(ReadOnlyHttp("https://mesonet.agron.iastate.edu", timeout=60, min_interval=0.1))
     nbm._cache.update(data.get("nbm", {}))
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-    latest: dict[datetime, object] = {}
+    latest: dict[tuple[datetime, date], object] = {}
     for i, day in enumerate(days):
         for lead in LEADS:
             at = decision_time(day, lead)
-            latest[at] = nbm.latest_run(at)
+            latest[(at, day)] = nbm.latest_run(at, target=day)
         if i % 30 == 29:
             data["nbm"] = dict(nbm._cache)
             save()
@@ -218,7 +218,7 @@ def run(start: date, test_start: date, end: date, cache: str | None, params_out:
                 for d, h in data["highs"].items() if h is not None}  # fmt: skip
     obs = drop_spikes(data["obs"])
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
-    cases = build_cases(days, LEADS, lambda at: latest.get(at), obs, outcomes, by_day)
+    cases = build_cases(days, LEADS, lambda at, day: latest.get((at, day)), obs, outcomes, by_day)
     train = [c for c in cases if c.day < test_start]
     test = [c for c in cases if c.day >= test_start]
     params = fit(train)
