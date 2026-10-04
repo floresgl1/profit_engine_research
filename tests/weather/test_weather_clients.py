@@ -8,10 +8,21 @@ import httpx
 import pytest
 
 from profit_engine.venues.http import ReadOnlyHttp
-from profit_engine.weather import AcisClient, IemAsosClient, clock_window, is_dst, is_transition, lst_window
+from profit_engine.weather import (
+    AcisClient,
+    IemAsosClient,
+    clock_window,
+    is_dst,
+    is_transition,
+    lst_window,
+)
 from profit_engine.weather.acis import parse_value
 from profit_engine.weather.iem import parse_csv
-from profit_engine.weather.kalshi_temps import event_day, group_events, settlement_source
+from profit_engine.weather.kalshi_temps import (
+    event_day,
+    group_events,
+    settlement_source,
+)
 
 NY = ZoneInfo("America/New_York")
 

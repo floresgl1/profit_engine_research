@@ -137,7 +137,9 @@ class TestPredict:
 
 import json  # noqa: E402
 
-from profit_engine.models.kalshi_temperature import KalshiHighTemperatureLamp  # noqa: E402
+from profit_engine.models.kalshi_temperature import (
+    KalshiHighTemperatureLamp,  # noqa: E402
+)
 from profit_engine.models.temperature import RemainingMaxModel  # noqa: E402
 from profit_engine.weather.lamp import LampRun  # noqa: E402
 

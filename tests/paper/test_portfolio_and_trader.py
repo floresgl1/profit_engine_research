@@ -5,7 +5,13 @@ import pytest
 from factories import KALSHI_DIRECT_FEES, T0, make_book, make_market, make_order
 
 from profit_engine.core import FillStatus, InvalidOrderBook, Outcome, Resolution, Side
-from profit_engine.paper import FillConfig, LiveBookProvider, PaperTrader, Portfolio, simulate_fill
+from profit_engine.paper import (
+    FillConfig,
+    LiveBookProvider,
+    PaperTrader,
+    Portfolio,
+    simulate_fill,
+)
 
 FULL = FillConfig(latency=timedelta(milliseconds=250), max_depth_fraction=D("1"))
 
