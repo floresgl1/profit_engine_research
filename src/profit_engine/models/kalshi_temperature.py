@@ -32,7 +32,7 @@ from profit_engine.models.temperature import (
 )
 from profit_engine.weather.iem import CENTRAL_PARK, IemAsosClient, drop_spikes
 from profit_engine.weather.kalshi_temps import Bucket, event_day
-from profit_engine.weather.lamp import LampClient
+from profit_engine.weather.lamp import LampClient, current_error
 from profit_engine.weather.nbm import NbmClient, NbmRun
 from profit_engine.weather.windows import is_dst
 
@@ -145,12 +145,16 @@ class KalshiHighTemperature:
             return None
         return predict_high(model, forecast.txn, forecast.xnd, self._observed_max(target, now), self._low_band(target))
 
-    def _observed_max(self, target: date, now: datetime) -> float | None:
+    def _observations(self, target: date, now: datetime) -> list:
+        """Today's spike-checked readings from 01:00 local up to now."""
         start = datetime.combine(target, time(1), tzinfo=NY).astimezone(timezone.utc)
         if now <= start:
-            return None
+            return []
         obs = self.iem.temperatures(CENTRAL_PARK, start.date(), (now + timedelta(days=1)).date())
-        values = [float(o.tmpf) for o in drop_spikes(obs) if start <= o.at <= now]
+        return [o for o in drop_spikes(obs) if start <= o.at <= now]
+
+    def _observed_max(self, target: date, now: datetime) -> float | None:
+        values = [float(o.tmpf) for o in self._observations(target, now)]
         return max(values) if values else None
 
     @staticmethod
@@ -192,7 +196,10 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
         if raw.get("model") != "lamp":
             raise ValueError(f"{path} is not a LAMP model parameter file")
         leads = {k: RemainingMaxModel.from_dict(v) for k, v in raw["leads"].items()}
-        return cls(leads, {k: tuple(v) for k, v in raw["lead_times"].items()}, lamp, iem, **kwargs)
+        model = cls(leads, {k: tuple(v) for k, v in raw["lead_times"].items()}, lamp, iem, **kwargs)
+        if raw.get("version", 2) != 2:
+            model.name = f"kxhigh_lamp_v{raw['version']}"  # distinct name so versions score side by side
+        return model
 
     def _build(self, target: date, now: datetime) -> HighDistribution | None:
         day_start = datetime.combine(target, time(1), tzinfo=NY).astimezone(timezone.utc)
@@ -205,7 +212,8 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
             return None
         start = max(now, day_start)
         remaining = run.max_between(start, day_end)
-        observed = self._observed_max(target, now)
+        todays = self._observations(target, now)
+        observed = max((float(o.tmpf) for o in todays), default=None)
         if observed is None and remaining is None:
             return None
         expected_high = max(x for x in (observed, remaining) if x is not None)
@@ -216,4 +224,5 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
                 log.info("%s: abstaining on %s, a midnight hour is forecast near the high", self.name, target)
                 return None
         lead = TemperatureParams(variant="lamp", leads={}, lead_times=self.lead_times).lead_for(target, now.astimezone(NY))
-        return self.leads[lead].distribution(observed, remaining, is_dst(target, NY))
+        error_now = current_error(run, todays, now) if todays else None
+        return self.leads[lead].distribution(observed, remaining, is_dst(target, NY), error_now)

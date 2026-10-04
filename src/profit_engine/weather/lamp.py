@@ -90,3 +90,20 @@ class LampClient:
             if run is not None and run.covers(until):
                 return run
         return None
+
+
+def current_error(run: LampRun, observations: list, at: datetime, max_age: timedelta = timedelta(minutes=90)) -> float | None:
+    """Latest reading minus LAMP's forecast for that hour: how far off LAMP is running right now.
+
+    Uses the newest observation at or before `at` (no older than `max_age`)
+    and the run's forecast for the nearest hour within 30 minutes of it.
+    None if either is missing.
+    """
+    recent = [o for o in observations if at - max_age <= o.at <= at]
+    if not recent:
+        return None
+    latest = max(recent, key=lambda o: o.at)
+    nearest = min(run.temps, key=lambda t: abs(t - latest.at), default=None)
+    if nearest is None or abs(nearest - latest.at) > timedelta(minutes=30):
+        return None
+    return float(latest.tmpf) - run.temps[nearest]

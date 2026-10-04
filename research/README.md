@@ -132,3 +132,29 @@ probability on the right bucket more often.
 the latest observed temperature and its trend (not just the max); bucket
 probabilities recalibrated on training data (isotonic); more cities for
 more training data.
+
+## Temperature model v3: correcting LAMP by its current error (`temperature_backtest_v3.py`)
+
+**Change from v2.** LAMP's remaining-day max is shifted by alpha x
+(latest reading - LAMP's forecast for that hour): if LAMP is running cold
+or warm right now, part of that carries into the afternoon. A 12:00 lead
+is added.
+
+**Result** (`temperature_backtest_v3.md`): **better than v2 at every same-day
+lead, still worse than the market.**
+
+| Lead | v2 skill | v3 skill | v3 alpha |
+|---|---|---|---|
+| Day before, 16:00 | -0.13 | -0.13 | 0 (no readings yet) |
+| Same day, 10:00 | -0.16 | -0.15 | 0.5 |
+| Same day, 12:00 | -0.27 | -0.16 | 0.5 |
+| Same day, 14:00 | -0.34 | -0.27 | 0.5 |
+| All | -0.20 | -0.16 | |
+
+The fitted alpha is 0.5 at all three same-day leads (fitted independently),
+which suggests a real effect: about half of LAMP's current miss persists
+into the afternoon. Spread tightened from 2.0 to 1.75°F.
+
+**Still no edge.** The market remains sharper, most at 14:00. The live
+model uses hourly LAMP runs (the backtest only has 6-hourly), so its live
+skill may be a little better; the forward log will tell.

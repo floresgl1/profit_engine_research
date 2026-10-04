@@ -52,3 +52,19 @@ def test_run_must_cover_the_day():
     c, _ = client({utc(2026, 10, 2, 12)})
     # A run reaching only to 2026-10-04 02Z cannot cover a window ending 2026-10-05 04Z.
     assert c.latest_run(utc(2026, 10, 2, 14), until=utc(2026, 10, 5, 4)) is None
+
+
+def test_current_error():
+    from decimal import Decimal
+
+    from profit_engine.weather.iem import Observation
+    from profit_engine.weather.lamp import LampRun, current_error
+
+    run = LampRun(utc(2026, 10, 2, 12), {utc(2026, 10, 2, 17): 71.0, utc(2026, 10, 2, 18): 72.0})
+    obs = [Observation(utc(2026, 10, 2, 16, 51), Decimal(70)), Observation(utc(2026, 10, 2, 17, 51), Decimal(74))]
+    # latest reading 74 at 17:51Z; nearest forecast hour 18Z says 72 -> LAMP running 2 degrees cold
+    assert current_error(run, obs, utc(2026, 10, 2, 18)) == 2.0
+    # at 17:00Z only the 16:51 reading counts: 70 vs 17Z 71 -> -1
+    assert current_error(run, obs, utc(2026, 10, 2, 17)) == -1.0
+    # no recent reading
+    assert current_error(run, obs, utc(2026, 10, 2, 22)) is None
