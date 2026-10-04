@@ -66,3 +66,14 @@ def test_smaller_samples_nest_in_larger():
     t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
     ms = [Settled(f"KX{s}-{i}-X", f"KX{s}-{i}", t0, t0 + timedelta(days=2), 0, D(1000)) for s in "ABC" for i in range(20)]
     assert set(sample(ms, per_series=3)) <= set(sample(ms, per_series=6))
+
+
+def test_unanimous_cell_is_not_certain():
+    from calibration_screen import cell, flagged
+
+    # 40 markets at 97c that all won, each its own cluster: clustered SE is 0, the floor is not.
+    rows = [Row(f"T{i}", f"E{i}", f"E{i}", "Sports", False, D("0.96"), D("0.98"), 1, D(1)) for i in range(40)]
+    c = cell(rows)
+    assert c.buy_yes_se == pytest.approx(math.sqrt(0.97 * 0.03 / 40))
+    assert c.spread == pytest.approx(0.02)
+    assert flagged(c) == ""  # +0.02 - 0.0006 fee is under 2 * 0.027

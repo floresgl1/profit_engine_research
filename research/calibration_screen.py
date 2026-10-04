@@ -45,6 +45,7 @@ START = datetime(2025, 1, 1, tzinfo=timezone.utc)
 END = datetime(2026, 8, 4, tzinfo=timezone.utc)  # archive cutoff: the archive is listable per series
 HORIZON = timedelta(hours=24)
 MIN_VOLUME = Decimal(500)
+MAX_SPREAD = Decimal("0.10")  # wider and the midpoint is not a price anyone is offering
 PER_SERIES = 3
 SAMPLE_DRAW = 6  # draw this many per series, keep the first PER_SERIES (smaller samples nest in larger)
 BASE_FEE = Decimal("0.07")
@@ -216,6 +217,8 @@ def build_rows(picks: list[Settled], quotes: dict, series: dict) -> tuple[list[R
             dropped["no quote"] += 1
         elif not (0 < q.bid < q.ask < 1):
             dropped["one-sided or crossed"] += 1
+        elif q.ask - q.bid > MAX_SPREAD:
+            dropped["spread over 10c"] += 1
         elif info is None or info["fee_type"] not in ("quadratic", "quadratic_with_maker_fees") or info["fee_multiplier"] is None:
             dropped["fee not modelled"] += 1
         else:
@@ -254,6 +257,7 @@ class Cell:
     n: int
     events: int
     mid: float
+    spread: float  # median ask - bid
     yes_rate: float
     yes_se: float
     buy_yes: float
@@ -268,7 +272,14 @@ def cell(rows: list[Row]) -> Cell:
     by, by_se = clustered_mean([float(r.buy_yes) for r in rows], ev)
     bn, bn_se = clustered_mean([float(r.buy_no) for r in rows], ev)
     mid = sum(float(r.mid) for r in rows) / len(rows) if rows else float("nan")
-    return Cell(len(rows), len(set(ev)), mid, yes, yes_se, by, by_se, bn, bn_se)
+    # A cell where every outcome agreed has a clustered SE of 0, which is not certainty.
+    # Floor every SE at the binomial SE expected if prices were right, over clusters.
+    g = len(set(ev))
+    floor = math.sqrt(max(mid * (1 - mid), 1e-6) / g) if g else float("nan")
+    yes_se, by_se, bn_se = (max(x, floor) for x in (yes_se, by_se, bn_se))
+    spreads = sorted(float(r.ask - r.bid) for r in rows)
+    spread = spreads[len(spreads) // 2] if spreads else float("nan")
+    return Cell(len(rows), g, mid, spread, yes, yes_se, by, by_se, bn, bn_se)
 
 
 def flagged(c: Cell, z: float = 2.0) -> str:
@@ -284,15 +295,15 @@ def flagged(c: Cell, z: float = 2.0) -> str:
 
 
 def table(rows: list[Row], title: str) -> list[str]:
-    out = [f"### {title}", "", "| Price band | Markets | Events | Mean mid | Won | Buy YES at ask | Buy NO at 1-bid | Flag |",
-           "|---|---|---|---|---|---|---|---|"]  # fmt: skip
+    out = [f"### {title}", "", "| Price band | Markets | Clusters | Mean mid | Median spread | Won | Buy YES at ask | Buy NO at 1-bid | Flag |",
+           "|---|---|---|---|---|---|---|---|---|"]  # fmt: skip
     for lo, hi in BANDS:
         sel = [r for r in rows if band_of(r.mid) == (lo, hi)]
         if not sel:
             continue
         c = cell(sel)
         out.append(
-            f"| {lo}-{hi}c | {c.n} | {c.events} | {c.mid:.3f} | {c.yes_rate:.3f} ± {c.yes_se:.3f} | "
+            f"| {lo}-{hi}c | {c.n} | {c.events} | {c.mid:.3f} | {c.spread:.3f} | {c.yes_rate:.3f} ± {c.yes_se:.3f} | "
             f"{c.buy_yes:+.4f} ± {c.buy_yes_se:.4f} | {c.buy_no:+.4f} ± {c.buy_no_se:.4f} | {flagged(c)} |"
         )
     return out + [""]
@@ -307,7 +318,8 @@ def report(rows: list[Row], dropped: dict, n_listed: int, n_sampled: int) -> str
                f"quote {HORIZON.total_seconds() / 3600:.0f} h before close. Dropped: {dropped}.")  # fmt: skip
     out.append(f"Discovery and holdout: disjoint halves of events by ticker hash ({len(disc)} / {len(hold)} markets).")
     out.append("Won = realized YES rate. Strategy columns: mean PnL per contract after fees ± SE clustered by "
-               "series and close date. Flag = profitable by more than 2 SE (n >= 30). Events column = clusters.")
+               "series and close date, floored at the binomial SE if prices were right. Flag = profitable by more "
+               "than 2 SE (n >= 30). Only markets quoted on both sides, at most 10c apart, 24 h before close are scored.")
     out.append("")
     out += ["## All categories", ""] + table(disc, "Discovery") + table(hold, "Holdout")
     out += ["## By category (discovery)", ""]
