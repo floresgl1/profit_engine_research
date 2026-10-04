@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from itertools import pairwise
 from datetime import datetime
 from decimal import Decimal
+from itertools import pairwise
 
 from profit_engine.core.time import require_utc
 

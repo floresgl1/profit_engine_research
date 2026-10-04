@@ -131,3 +131,64 @@ class TestPredict:
         for s in STRIKES:
             m.predict(market(*s), make_book())
         assert m.nbm.calls == 1
+
+
+# --- v2 (LAMP) ---------------------------------------------------------------------------------
+
+import json  # noqa: E402
+
+from profit_engine.models.kalshi_temperature import KalshiHighTemperatureLamp  # noqa: E402
+from profit_engine.models.temperature import RemainingMaxModel  # noqa: E402
+from profit_engine.weather.lamp import LampRun  # noqa: E402
+
+V2_LEADS = {name: RemainingMaxModel(bias=1.0, sigma=1.0) for name in PARAMS.lead_times}
+
+
+class FakeLamp:
+    def __init__(self, temps):
+        self.temps = temps
+        self.calls = 0
+
+    def latest_run(self, at, until):
+        self.calls += 1
+        return LampRun(utc(2026, 9, 28, 12), self.temps)
+
+
+def lamp_temps(afternoon=70.0, midnight=55.0):
+    # hourly 05Z Sep 28 (01:00 EDT) .. 05Z Sep 29; afternoon peak at 19Z (15:00 EDT)
+    temps = {utc(2026, 9, 28, h): 60.0 for h in range(5, 24)} | {utc(2026, 9, 29, h): midnight for h in range(0, 6)}
+    temps[utc(2026, 9, 28, 19)] = afternoon
+    temps[utc(2026, 9, 28, 4)] = midnight
+    return temps
+
+
+def v2(now, temps=None, obs=()):
+    return KalshiHighTemperatureLamp(V2_LEADS, PARAMS.lead_times, FakeLamp(temps or lamp_temps()), FakeIem(list(obs)), now=lambda: now)
+
+
+class TestLampModel:
+    def test_buckets_sum_to_one(self):
+        m = v2(utc(2026, 9, 28, 14))
+        probs = [m.predict(market(*s), make_book()) for s in STRIKES]
+        assert sum(probs) == pytest.approx(D(1), abs=D("0.001"))
+
+    def test_observed_heat_beats_cool_forecast(self):
+        # 13:51 EDT reading 72 with forecast rest-of-day max 60 (+1 bias): high comes from observations.
+        # 72 + DST undercount (-1..+3) -> 71..75: all mass in 70-71 and 71+.
+        temps = lamp_temps(afternoon=60.0)
+        m = v2(utc(2026, 9, 28, 18, 5), temps=temps, obs=[Observation(utc(2026, 9, 28, 17, 51), D(72))])
+        probs = {s[0]: m.predict(market(*s), make_book()) for s in STRIKES}
+        assert probs["T71"] > D("0.95")
+
+    def test_abstains_when_midnight_is_warm(self):
+        m = v2(utc(2026, 9, 28, 14), temps=lamp_temps(afternoon=70.0, midnight=69.0))
+        assert m.predict(market(*STRIKES[0]), make_book()) is None
+
+    def test_abstains_after_the_day(self):
+        assert v2(utc(2026, 9, 29, 5)).predict(market(*STRIKES[0]), make_book()) is None
+
+    def test_from_file_requires_lamp_params(self, tmp_path):
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps({"model": "nbm", "leads": {}, "lead_times": {}}))
+        with pytest.raises(ValueError):
+            KalshiHighTemperatureLamp.from_file(path, FakeLamp({}), FakeIem([]))

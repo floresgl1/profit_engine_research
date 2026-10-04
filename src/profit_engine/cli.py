@@ -12,14 +12,25 @@ from pathlib import Path
 
 from profit_engine.ingest import Pipeline, PipelineConfig, SkipMonitor
 from profit_engine.models import MidpointBaseline
-from profit_engine.paper import EdgeStrategy, FillConfig, LiveBookProvider, PaperTrader, rebuild_portfolio
+from profit_engine.paper import (
+    EdgeStrategy,
+    FillConfig,
+    LiveBookProvider,
+    PaperTrader,
+    rebuild_portfolio,
+)
 from profit_engine.scoring import full_report
 from profit_engine.storage import Store
 from profit_engine.venues.base import MarketDataSource
 from profit_engine.venues.http import ReadOnlyHttp
 from profit_engine.venues.kalshi import BASE_URL as KALSHI_URL
 from profit_engine.venues.kalshi import KalshiSource
-from profit_engine.venues.polymarket import CLOB_URL, DATA_URL, GAMMA_URL, PolymarketSource
+from profit_engine.venues.polymarket import (
+    CLOB_URL,
+    DATA_URL,
+    GAMMA_URL,
+    PolymarketSource,
+)
 from profit_engine.weather import IemAsosClient
 
 DEFAULT_DB = Path("data/research.db")
@@ -49,17 +60,23 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = Store(args.db)
     models = [MidpointBaseline()]
-    if args.temperature_params:
-        from profit_engine.models.kalshi_temperature import KalshiHighTemperature, TemperatureParams
-        from profit_engine.weather import iem, nbm
+    for params_path in args.temperature_params or []:
+        import json
 
-        models.append(
-            KalshiHighTemperature(
-                TemperatureParams.load(args.temperature_params),
-                nbm.NbmClient(ReadOnlyHttp(nbm.BASE_URL, timeout=60)),
-                IemAsosClient(ReadOnlyHttp(iem.BASE_URL, timeout=60)),
-            )
+        from profit_engine.models.kalshi_temperature import (
+            KalshiHighTemperature,
+            KalshiHighTemperatureLamp,
+            TemperatureParams,
         )
+        from profit_engine.weather import iem, lamp, nbm
+
+        iem_client = IemAsosClient(ReadOnlyHttp(iem.BASE_URL, timeout=60))
+        if json.loads(Path(params_path).read_text()).get("model") == "lamp":
+            lamp_client = lamp.LampClient(ReadOnlyHttp(lamp.BASE_URL, timeout=60))
+            models.append(KalshiHighTemperatureLamp.from_file(params_path, lamp_client, iem_client))
+        else:
+            nbm_client = nbm.NbmClient(ReadOnlyHttp(nbm.BASE_URL, timeout=60))
+            models.append(KalshiHighTemperature(TemperatureParams.load(params_path), nbm_client, iem_client))
     names = [m.name for m in models]
     if args.paper_trade and args.trade_model not in names:
         print(f"--trade-model must be one of {names}", file=sys.stderr)
@@ -148,7 +165,9 @@ def parser() -> argparse.ArgumentParser:
     ing.add_argument("--order-size", default="10", help="EdgeStrategy contracts per order")
     ing.add_argument(
         "--temperature-params",
-        help="add the KXHIGHNY temperature model using these fitted parameters (research/temperature_params.json)",
+        action="append",
+        help="add a KXHIGHNY temperature model from a fitted parameter file; repeatable "
+        "(research/temperature_params.json = v1 NBM, research/temperature_params_lamp.json = v2 LAMP)",
     )
     ing.add_argument("--trade-model", default="midpoint", help="which model's predictions drive paper trades")
     ing.set_defaults(func=cmd_ingest)
