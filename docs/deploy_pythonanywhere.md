@@ -39,6 +39,15 @@ This logs three models side by side: `midpoint` (the market), `kxhigh_nbm`
 (v1) and `kxhigh_lamp_v3` (v3, which supersedes v2). No `--paper-trade`: none has an edge yet
 (research/README.md); `profit-engine score` compares them on live data.
 
+### Optional: log every city
+
+Each city's v3 parameters are in `research/params/<SERIES>.json`. To log
+predictions for all seven cities (CPU stays small, about 0.1 s per cycle):
+
+```
+cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/research.db ingest --kalshi-series KXHIGHNY,KXHIGHCHI,KXHIGHAUS,KXHIGHMIA,KXHIGHLAX,KXHIGHDEN,KXHIGHPHIL --temperature-params research/temperature_params.json --temperature-params research/temperature_params_lamp_v3.json --temperature-params research/params/KXHIGHCHI.json --temperature-params research/params/KXHIGHAUS.json --temperature-params research/params/KXHIGHMIA.json --temperature-params research/params/KXHIGHLAX.json --temperature-params research/params/KXHIGHDEN.json --temperature-params research/params/KXHIGHPHIL.json --interval 60
+```
+
 ## Watching it
 
 - Task log (Tasks page -> log link): one line per cycle ending

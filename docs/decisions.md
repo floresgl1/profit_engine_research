@@ -167,3 +167,4 @@ and to store.
 | Trading | Not traded; logged next to v1 and the market | Trade | Backtest skill still negative at every lead. |
 | Nowcast correction (v3) | Shift LAMP's remaining max by alpha * (latest reading - LAMP's forecast for that hour), alpha fitted per lead | Ignore current error | Held-out skill improved at every same-day lead (all: -0.20 to -0.16); alpha = 0.5 at every lead. |
 | Live models | Log midpoint, v1 (`kxhigh_nbm`) and v3 (`kxhigh_lamp_v3`); v2 retired from the live command | Log everything | v3 contains v2 (alpha = 0) and beat it on held-out data. |
+| Other cities | Six more KXHIGH series (Chicago, Austin, Miami, LA, Denver, Philadelphia) with per-station undercount | NYC only | More data and possibly softer markets; result: no edge anywhere (-0.12 to -0.26 skill). |
