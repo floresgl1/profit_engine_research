@@ -20,6 +20,7 @@ from profit_engine.venues.http import ReadOnlyHttp
 from profit_engine.venues.kalshi import BASE_URL as KALSHI_URL
 from profit_engine.venues.kalshi import KalshiSource
 from profit_engine.venues.polymarket import CLOB_URL, DATA_URL, GAMMA_URL, PolymarketSource
+from profit_engine.weather import IemAsosClient
 
 DEFAULT_DB = Path("data/research.db")
 
@@ -48,6 +49,21 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     Path(args.db).parent.mkdir(parents=True, exist_ok=True)
     store = Store(args.db)
     models = [MidpointBaseline()]
+    if args.temperature_params:
+        from profit_engine.models.kalshi_temperature import KalshiHighTemperature, TemperatureParams
+        from profit_engine.weather import iem, nbm
+
+        models.append(
+            KalshiHighTemperature(
+                TemperatureParams.load(args.temperature_params),
+                nbm.NbmClient(ReadOnlyHttp(nbm.BASE_URL, timeout=60)),
+                IemAsosClient(ReadOnlyHttp(iem.BASE_URL, timeout=60)),
+            )
+        )
+    names = [m.name for m in models]
+    if args.paper_trade and args.trade_model not in names:
+        print(f"--trade-model must be one of {names}", file=sys.stderr)
+        return 2
 
     strategy = trader = None
     if args.paper_trade:
@@ -67,7 +83,7 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         monitor=SkipMonitor(threshold=args.skip_alert),
         strategy=strategy,
         trader=trader,
-        trading_model=models[0].name if strategy else None,
+        trading_model=args.trade_model if strategy else None,
         config=PipelineConfig(poll_interval=timedelta(seconds=args.interval)),
     )
     try:
@@ -130,6 +146,11 @@ def parser() -> argparse.ArgumentParser:
     ing.add_argument("--depth-fraction", default="0.25", help="max order size as a fraction of visible depth")
     ing.add_argument("--min-edge", default="0.03", help="EdgeStrategy minimum edge after fees")
     ing.add_argument("--order-size", default="10", help="EdgeStrategy contracts per order")
+    ing.add_argument(
+        "--temperature-params",
+        help="add the KXHIGHNY temperature model using these fitted parameters (research/temperature_params.json)",
+    )
+    ing.add_argument("--trade-model", default="midpoint", help="which model's predictions drive paper trades")
     ing.set_defaults(func=cmd_ingest)
 
     score = sub.add_parser("score", help="Brier scores and calibration, model vs market")

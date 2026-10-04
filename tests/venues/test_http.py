@@ -103,4 +103,11 @@ def test_throttle_spaces_requests():
 
 def test_public_surface_is_get_only():
     public = {name for name in dir(ReadOnlyHttp) if not name.startswith("_")}
-    assert public == {"get_json", "close"}
+    assert public == {"get_json", "get_text", "close"}
+
+
+def test_get_text():
+    script = Script(httpx.Response(200, text="a,b\n1,2\n"))
+    http, _ = client(script)
+    assert http.get_text("/x.csv") == "a,b\n1,2\n"
+    assert script.requests[0].method == "GET"

@@ -1,7 +1,7 @@
 """GET-only HTTP client shared by all venue adapters.
 
 This is the only module that talks to the network. It exposes `get_json` and
-nothing else: there is no way to send a POST/PUT/DELETE or a request body,
+`get_text` and nothing else: there is no way to send a POST/PUT/DELETE or a request body,
 and it never sends credentials. That is what makes "no code path can place
 an order" a structural property rather than a promise.
 """
@@ -57,6 +57,13 @@ class ReadOnlyHttp:
 
     def get_json(self, path: str, params: QueryParams | None = None) -> Any:
         """GET `path` and decode JSON. Retries 429/5xx/transport errors with backoff."""
+        return self._get(path, params).json()
+
+    def get_text(self, path: str, params: QueryParams | None = None) -> str:
+        """GET `path` and return the body as text (for CSV endpoints)."""
+        return self._get(path, params).text
+
+    def _get(self, path: str, params: QueryParams | None) -> httpx.Response:
         delay = 2.0
         for attempt in range(self._max_retries + 1):
             self._throttle()
@@ -80,7 +87,7 @@ class ReadOnlyHttp:
                 raise VenueHttpError(
                     f"GET {path} -> {response.status_code}: {response.text[:200]}", response.status_code
                 )
-            return response.json()
+            return response
         raise AssertionError("unreachable")
 
     def close(self) -> None:
