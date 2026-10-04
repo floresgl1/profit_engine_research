@@ -119,7 +119,10 @@ def cmd_ingest(args: argparse.Namespace) -> int:
 def cmd_score(args: argparse.Namespace) -> int:
     store = Store(args.db)
     try:
-        print(full_report(store.scored_predictions(), store.models(), args.buckets))
+        series = [s.strip() for s in (args.series or "").split(",") if s.strip()]
+        if series:
+            print(f"series: {', '.join(series)}")
+        print(full_report(store.scored_predictions(series=series), store.models(), args.buckets))
     finally:
         store.close()
     return 0
@@ -178,6 +181,7 @@ def parser() -> argparse.ArgumentParser:
 
     score = sub.add_parser("score", help="Brier scores and calibration, model vs market")
     score.add_argument("--buckets", type=int, default=10)
+    score.add_argument("--series", help="only score these comma-separated Kalshi series, e.g. KXHIGHCHI or KXHIGHNY,KXHIGHPHIL")
     score.set_defaults(func=cmd_score)
 
     status = sub.add_parser("status", help="what is in the database")

@@ -56,6 +56,9 @@ cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/re
   next day. Check the per-day growth after the first day.
 - Skip-rate alerts appear in the same log as `ALERT`.
 - `profit-engine --db data/research.db status` and `... score` from a console.
+- Every city's v3 model logs as `kxhigh_lamp_v3`, so plain `score` pools
+  the cities; `score --series KXHIGHCHI` (or a comma-separated list)
+  scores one city on its own.
 
 ## Updating
 

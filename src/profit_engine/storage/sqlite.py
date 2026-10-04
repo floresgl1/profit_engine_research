@@ -14,7 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -357,17 +357,28 @@ class Store:
                 ),
             )
 
-    def scored_predictions(self, model: str | None = None) -> list[ScoredRow]:
-        """Predictions for resolved markets, oldest first, each with its outcome."""
+    def scored_predictions(self, model: str | None = None, series: Sequence[str] = ()) -> list[ScoredRow]:
+        """Predictions for resolved markets, oldest first, each with its outcome.
+
+        `series` keeps only markets whose venue_meta series_ticker is one of
+        them (Kalshi series such as KXHIGHCHI); empty means every market.
+        """
         sql = """
             SELECT p.venue, p.market_id, p.model, p.predicted_at, p.probability, p.market_probability,
                    p.best_bid, p.best_ask, p.book_received_at, r.yes_value
             FROM predictions p JOIN resolutions r ON r.venue = p.venue AND r.market_id = p.market_id
         """
+        where: list[str] = []
         args: list[str] = []
+        if series:
+            sql += " JOIN markets m ON m.venue = p.venue AND m.market_id = p.market_id"
+            where.append(f"json_extract(m.venue_meta, '$.series_ticker') IN ({', '.join('?' * len(series))})")
+            args.extend(series)
         if model is not None:
-            sql += " WHERE p.model = ?"
+            where.append("p.model = ?")
             args.append(model)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         rows = self._conn.execute(sql + " ORDER BY p.predicted_at, p.id", args)
         return [
             ScoredRow(
