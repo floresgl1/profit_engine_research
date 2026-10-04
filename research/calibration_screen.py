@@ -66,9 +66,9 @@ def is_holdout(event_ticker: str) -> bool:
     return int(hashlib.sha256(event_ticker.encode()).hexdigest()[:8], 16) % 2 == 1
 
 
-def fee(price: Decimal, multiplier: Decimal, contracts: int = 100) -> Decimal:
-    """Taker fee per contract, each fill rounded up to 1e-6 (as in the structural screen)."""
-    total = (BASE_FEE * multiplier * contracts * price * (1 - price)).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
+def fee(price: Decimal, rate: Decimal, contracts: int = 100) -> Decimal:
+    """Taker fee per contract at `rate` x P x (1-P), each fill rounded up to 1e-6."""
+    total = (rate * contracts * price * (1 - price)).quantize(Decimal("0.000001"), rounding=ROUND_CEILING)
     return total / contracts
 
 
@@ -190,7 +190,7 @@ class Row:
     bid: Decimal
     ask: Decimal
     result: int
-    multiplier: Decimal
+    fee_rate: Decimal  # taker fee = fee_rate x P x (1-P) per contract
 
     @property
     def mid(self) -> Decimal:
@@ -199,13 +199,13 @@ class Row:
     @property
     def buy_yes(self) -> Decimal:
         """Per-contract PnL of buying YES at the ask, after fee."""
-        return self.result - self.ask - fee(self.ask, self.multiplier)
+        return self.result - self.ask - fee(self.ask, self.fee_rate)
 
     @property
     def buy_no(self) -> Decimal:
         """Per-contract PnL of buying NO at 1 - bid, after fee."""
         price = 1 - self.bid
-        return (1 - self.result) - price - fee(price, self.multiplier)
+        return (1 - self.result) - price - fee(price, self.fee_rate)
 
 
 def build_rows(picks: list[Settled], quotes: dict, series: dict) -> tuple[list[Row], dict]:
@@ -224,7 +224,7 @@ def build_rows(picks: list[Settled], quotes: dict, series: dict) -> tuple[list[R
         else:
             cluster = f"{series_of(m.event)}|{m.close_time.date()}"
             rows.append(Row(m.ticker, m.event, cluster, info["category"], is_holdout(m.event), q.bid, q.ask, m.result,
-                            Decimal(str(info["fee_multiplier"]))))  # fmt: skip
+                            BASE_FEE * Decimal(str(info["fee_multiplier"]))))  # fmt: skip
     return rows, dict(dropped)
 
 

@@ -6,8 +6,8 @@ import pytest
 from calibration_screen import Row, Settled, band_of, clustered_mean, fee, parse_market, sample, series_of
 
 
-def row(bid, ask, result, multiplier="1"):
-    return Row("T", "E", "E", "Sports", False, D(bid), D(ask), result, D(multiplier))
+def row(bid, ask, result, rate="0.07"):
+    return Row("T", "E", "E", "Sports", False, D(bid), D(ask), result, D(rate))
 
 
 def test_fee_and_strategy_pnl_hand_computed():
@@ -16,7 +16,7 @@ def test_fee_and_strategy_pnl_hand_computed():
     assert row("0.08", "0.10", 0).buy_yes == D("-0.1063")
     # buy NO at 1 - 0.08 = 0.92: fee 0.07 * 0.92 * 0.08 = 0.005152; YES loses -> 1 - 0.92 - 0.005152
     assert row("0.08", "0.10", 0).buy_no == D("0.074848")
-    assert fee(D("0.5"), D("0.5")) == D("0.00875")  # half-fee series
+    assert fee(D("0.5"), D("0.035")) == D("0.00875")  # half-fee series
 
 
 def test_clustered_se_counts_events_not_markets():
@@ -72,7 +72,7 @@ def test_unanimous_cell_is_not_certain():
     from calibration_screen import cell, flagged
 
     # 40 markets at 97c that all won, each its own cluster: clustered SE is 0, the floor is not.
-    rows = [Row(f"T{i}", f"E{i}", f"E{i}", "Sports", False, D("0.96"), D("0.98"), 1, D(1)) for i in range(40)]
+    rows = [Row(f"T{i}", f"E{i}", f"E{i}", "Sports", False, D("0.96"), D("0.98"), 1, D("0.07")) for i in range(40)]
     c = cell(rows)
     assert c.buy_yes_se == pytest.approx(math.sqrt(0.97 * 0.03 / 40))
     assert c.spread == pytest.approx(0.02)
