@@ -1,6 +1,7 @@
 """The calibration screen (calibration_screen.py) on Polymarket.
 
-Same question: when a contract traded at p 24 hours before close, did it win
+Same question: when a contract traded at p 24 hours after the market was
+created, did it win
 about p of the time, and does blindly buying either side in a price band
 beat fees? Differences from the Kalshi screen, forced by the public data:
 
@@ -16,14 +17,16 @@ beat fees? Differences from the Kalshi screen, forced by the public data:
   rates is the conservative side.
 - No series: recurring markets (e.g. 15-minute crypto up/down) would swamp a
   uniform sample, so the sample takes one market per event and at most
-  PER_CATEGORY_DAY per category per close date; errors are clustered by
-  category and close date.
+  PER_CATEGORY_DAY per category per decision date; errors are clustered by
+  category and decision date.
 - The "YES" side is the market's first outcome (for team-vs-team markets,
   the first listed team).
 
 Data (cached in data/polymarket_screen/): closed markets with an end date in
 the screen period and volume >= MIN_VOLUME from Gamma GET /markets/keyset,
-resolved cleanly to 1/0; price of the first outcome's token at close - 24 h.
+resolved cleanly to 1/0; price of the first outcome's token 24 h after the
+market was created (a time that can't depend on the outcome; close times do).
+Markets already closed by then are skipped.
 
 Run: uv run python research/polymarket_screen.py --out research/polymarket_screen.md
 """
@@ -47,7 +50,8 @@ from calibration_screen import BANDS, Row, band_of, cell, flagged, is_holdout, t
 
 START = datetime(2025, 1, 1, tzinfo=timezone.utc)
 END = datetime(2026, 10, 1, tzinfo=timezone.utc)
-HORIZON = timedelta(hours=24)
+DECISION_DELAY = timedelta(hours=24)  # after creation; see calibration_screen.py
+LOOKBACK = timedelta(hours=6)
 MIN_VOLUME = 1000  # USDC
 PER_CATEGORY_DAY = 5
 CACHE = "data/polymarket_screen"
@@ -90,6 +94,7 @@ class Closed:
     market_id: str
     event_id: str
     token: str  # first outcome's CLOB token
+    created_at: datetime
     closed_at: datetime
     result: int  # 1 if the first outcome won
     category: str
@@ -100,11 +105,12 @@ def parse_market(m: dict) -> Closed | None:
     try:
         prices = [Decimal(p) for p in json.loads(m.get("outcomePrices") or "[]")]
         tokens = json.loads(m.get("clobTokenIds") or "[]")
-        if len(prices) != 2 or len(tokens) != 2 or sorted(prices) != [0, 1] or not m.get("closedTime"):
+        if len(prices) != 2 or len(tokens) != 2 or sorted(prices) != [0, 1] or not m.get("closedTime") or not m.get("createdAt"):
             return None  # not binary, or not cleanly resolved (e.g. 50-50, cancelled)
         events = m.get("events") or [{}]
         category, rate = category_of([t.get("label", "") for t in m.get("tags") or []])
-        return Closed(str(m["id"]), str(events[0].get("id", m["id"])), tokens[0], parse_time(m["closedTime"]),
+        return Closed(str(m["id"]), str(events[0].get("id", m["id"])), tokens[0], parse_time(m["createdAt"]),
+                      parse_time(m["closedTime"]),
                       int(prices[0]), category, rate)  # fmt: skip
     except (KeyError, ValueError, TypeError, json.JSONDecodeError):
         return None
@@ -127,7 +133,7 @@ def _save(name: str, data) -> None:
 
 
 def list_closed(gamma) -> list[Closed]:
-    state = _load("listing", {"markets": {}, "cursor": None, "done": False})
+    state = _load("listing_v2", {"markets": {}, "cursor": None, "done": False})
     params = {"closed": "true", "limit": "100", "include_tag": "true", "volume_num_min": str(MIN_VOLUME),
               "end_date_min": START.strftime("%Y-%m-%dT%H:%M:%SZ"), "end_date_max": END.strftime("%Y-%m-%dT%H:%M:%SZ")}  # fmt: skip
     n = 0
@@ -142,20 +148,25 @@ def list_closed(gamma) -> list[Closed]:
         state["done"] = not state["cursor"] or not data.get("markets")
         n += 1
         if n % 100 == 0 or state["done"]:
-            _save("listing", state)
+            _save("listing_v2", state)
             print(f"  listing: {n} pages, {len(state['markets'])} markets", flush=True)
     return list(state["markets"].values())
+
+
+def decision_time(m: Closed) -> datetime:
+    return m.created_at + DECISION_DELAY
 
 
 def sample(markets: list[Closed], per_category_day: int = PER_CATEGORY_DAY, seed: int = 7) -> list[Closed]:
     rng = random.Random(seed)
     by_event: dict[str, list[Closed]] = defaultdict(list)
     for m in markets:
-        by_event[m.event_id].append(m)
+        if m.closed_at - m.created_at >= DECISION_DELAY + timedelta(hours=1):
+            by_event[m.event_id].append(m)
     one_each = [rng.choice(sorted(group, key=lambda m: m.market_id)) for _, group in sorted(by_event.items())]
     by_cell: dict[tuple[str, object], list[Closed]] = defaultdict(list)
     for m in one_each:
-        by_cell[(m.category, m.closed_at.date())].append(m)
+        by_cell[(m.category, decision_time(m).date())].append(m)
     out = []
     for key in sorted(by_cell, key=str):
         group = by_cell[key]
@@ -164,19 +175,19 @@ def sample(markets: list[Closed], per_category_day: int = PER_CATEGORY_DAY, seed
 
 
 def fetch_prices(picks: list[Closed], workers: int = 4) -> dict[str, Decimal | None]:
-    """Price of each pick's first-outcome token at close - HORIZON (None if no point in the 3 h before)."""
+    """Price of each pick's first-outcome token at its decision time (None if no point within LOOKBACK)."""
     from profit_engine.venues.http import ReadOnlyHttp
     from profit_engine.venues.polymarket import CLOB_URL
 
-    prices: dict[str, Decimal | None] = _load("prices", {})
+    prices: dict[str, Decimal | None] = _load("prices_open", {})
     todo = [m for m in picks if m.market_id not in prices]
     local = threading.local()
 
     def one(m: Closed) -> tuple[str, Decimal | None]:
         if not hasattr(local, "http"):
             local.http = ReadOnlyHttp(CLOB_URL, min_interval=0.1)
-        at = int((m.closed_at - HORIZON).timestamp())
-        hist = local.http.get_json("/prices-history", {"market": m.token, "startTs": str(at - 3 * 3600),
+        at = int(decision_time(m).timestamp())
+        hist = local.http.get_json("/prices-history", {"market": m.token, "startTs": str(at - int(LOOKBACK.total_seconds())),
                                                        "endTs": str(at), "fidelity": "60"}).get("history") or []  # fmt: skip
         points = [h for h in hist if h["t"] <= at]
         return m.market_id, (Decimal(str(max(points, key=lambda h: h["t"])["p"])) if points else None)
@@ -185,9 +196,9 @@ def fetch_prices(picks: list[Closed], workers: int = 4) -> dict[str, Decimal | N
         for i, (mid, price) in enumerate(pool.map(one, todo)):
             prices[mid] = price
             if i % 500 == 499:
-                _save("prices", prices)
+                _save("prices_open", prices)
                 print(f"  prices: {i + 1} of {len(todo)}", flush=True)
-    _save("prices", prices)
+    _save("prices_open", prices)
     return prices
 
 
@@ -200,7 +211,7 @@ def build_rows(picks: list[Closed], prices: dict) -> tuple[list[Row], dict]:
         elif not (0 < p < 1):
             dropped["price at 0 or 1"] += 1
         else:
-            cluster = f"{m.category}|{m.closed_at.date()}"
+            cluster = f"{m.category}|{decision_time(m).date()}"
             rows.append(Row(m.market_id, m.event_id, cluster, m.category, is_holdout(m.event_id), p, p, m.result, m.fee_rate))
     return rows, dict(dropped)
 
@@ -211,10 +222,10 @@ def report(rows: list[Row], dropped: dict, n_listed: int, n_sampled: int) -> str
     out = ["# Polymarket calibration screen", ""]
     out.append(f"Closed binary markets, end date {START:%Y-%m-%d} to {END:%Y-%m-%d}, volume >= {MIN_VOLUME} USDC: "
                f"{n_listed} listed, {n_sampled} sampled (one per event, up to {PER_CATEGORY_DAY} per category per day), "
-               f"{len(rows)} with a price 24 h before close. Dropped: {dropped}.")  # fmt: skip
+               f"{len(rows)} with a price 24 h after creation. Dropped: {dropped}.")  # fmt: skip
     out.append(f"Discovery and holdout: disjoint halves of events by id hash ({len(disc)} / {len(hold)} markets).")
     out.append("**No spread in the strategy columns** (the price history has no bid/ask): they pay the price plus "
-               "today's taker fee only. Spread column is 0 by construction. SE clustered by category and close date, "
+               "today's taker fee only. Spread column is 0 by construction. SE clustered by category and decision date, "
                "floored at the binomial SE if prices were right. Flag = profitable by more than 2 SE (n >= 30).")
     out.append("")
     out += ["## All categories", ""] + table(disc, "Discovery") + table(hold, "Holdout")

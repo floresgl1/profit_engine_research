@@ -1,7 +1,7 @@
 """Screen all of Kalshi for systematic mispricing, by category.
 
 For a sample of settled binary markets, take the best YES bid/ask 24 hours
-before close and ask: when a contract was priced at p, did it win about p
+after the market opened and ask: when a contract was priced at p, did it win about p
 of the time? And would blindly buying YES at the ask, or NO at (1 - bid),
 in a price band have made money after fees? A category whose prices are
 systematically off (e.g. the favourite-longshot bias: cheap contracts win
@@ -14,10 +14,10 @@ Data (read-only, cached in data/screen/):
 2. Series categories and fee multipliers from GET /series.
 3. Sample: markets with volume >= MIN_VOLUME that opened at least a day
    before close, up to PER_SERIES per series (seeded random).
-4. Hourly candles around close - 24h; the candle that closed at or before
-   that time gives bid/ask. Markets without both sides are dropped.
+4. Hourly candles up to open + 24h; the last candle that closed at or before
+   that time (within LOOKBACK) gives bid/ask. Markets without both sides are dropped.
 
-Statistics are clustered by series and close date: buckets of one event
+Statistics are clustered by series and decision date: buckets of one event
 share an outcome, and a series' events on one day often share a driver
 (e.g. hourly Bitcoin ladders), so markets are not independent. Events are
 split into disjoint discovery and holdout halves by ticker hash.
@@ -43,7 +43,11 @@ from profit_engine.weather.kalshi_temps import Quote, quote_at
 
 START = datetime(2025, 1, 1, tzinfo=timezone.utc)
 END = datetime(2026, 8, 4, tzinfo=timezone.utc)  # archive cutoff: the archive is listable per series
-HORIZON = timedelta(hours=24)
+# Decision time = open + DECISION_DELAY. It must not depend on the outcome: a
+# close-based time does (markets that resolve early tend to resolve YES), which
+# biased the first version of this screen.
+DECISION_DELAY = timedelta(hours=24)
+LOOKBACK = timedelta(hours=6)
 MIN_VOLUME = Decimal(500)
 MAX_SPREAD = Decimal("0.10")  # wider and the midpoint is not a price anyone is offering
 PER_SERIES = 3
@@ -149,7 +153,7 @@ def load_series(http) -> dict[str, dict]:
 def sample(markets: list[Settled], per_series: int = PER_SERIES, seed: int = 7) -> list[Settled]:
     by_series: dict[str, list[Settled]] = defaultdict(list)
     for m in markets:
-        if m.volume >= MIN_VOLUME and m.close_time - m.open_time >= HORIZON + timedelta(hours=1):
+        if m.volume >= MIN_VOLUME and m.close_time - m.open_time >= DECISION_DELAY + timedelta(hours=1):
             by_series[series_of(m.event)].append(m)
     rng = random.Random(seed)
     out = []
@@ -159,21 +163,25 @@ def sample(markets: list[Settled], per_series: int = PER_SERIES, seed: int = 7) 
     return out
 
 
+def decision_time(m: Settled) -> datetime:
+    return m.open_time + DECISION_DELAY
+
+
 def fetch_quotes(http, picks: list[Settled]) -> dict[str, Quote | None]:
-    """Quote at close - HORIZON per market (None if no candle or a one-sided book)."""
+    """Quote at open + DECISION_DELAY per market (None if no candle within LOOKBACK)."""
     from profit_engine.weather.kalshi_temps import price_history
 
-    quotes: dict[str, Quote | None] = _load("quotes", {})
+    quotes: dict[str, Quote | None] = _load("quotes_open", {})
     todo = [m for m in picks if m.ticker not in quotes]
     for i, m in enumerate(todo):
-        at = m.close_time - HORIZON
-        hist = price_history(http, [m.ticker], at - timedelta(hours=3), at + timedelta(minutes=1), historical=True)
+        at = decision_time(m)
+        hist = price_history(http, [m.ticker], at - LOOKBACK, at + timedelta(minutes=1), historical=True)
         q = quote_at(hist.get(m.ticker, []), at)
-        quotes[m.ticker] = q if q and q.at >= at - timedelta(hours=3) else None
+        quotes[m.ticker] = q if q and q.at >= at - LOOKBACK else None
         if i % 200 == 199:
-            _save("quotes", quotes)
+            _save("quotes_open", quotes)
             print(f"  quotes: {i + 1} of {len(todo)}", flush=True)
-    _save("quotes", quotes)
+    _save("quotes_open", quotes)
     return quotes
 
 
@@ -222,7 +230,7 @@ def build_rows(picks: list[Settled], quotes: dict, series: dict) -> tuple[list[R
         elif info is None or info["fee_type"] not in ("quadratic", "quadratic_with_maker_fees") or info["fee_multiplier"] is None:
             dropped["fee not modelled"] += 1
         else:
-            cluster = f"{series_of(m.event)}|{m.close_time.date()}"
+            cluster = f"{series_of(m.event)}|{decision_time(m).date()}"
             rows.append(Row(m.ticker, m.event, cluster, info["category"], is_holdout(m.event), q.bid, q.ask, m.result,
                             BASE_FEE * Decimal(str(info["fee_multiplier"]))))  # fmt: skip
     return rows, dict(dropped)
@@ -315,11 +323,11 @@ def report(rows: list[Row], dropped: dict, n_listed: int, n_sampled: int) -> str
     out = ["# Kalshi calibration screen", ""]
     out.append(f"Settled binary markets closing {START:%Y-%m-%d} to {END:%Y-%m-%d}: {n_listed} listed, "
                f"{n_sampled} sampled (volume >= {MIN_VOLUME}, up to {PER_SERIES} per series), {len(rows)} with a two-sided "
-               f"quote {HORIZON.total_seconds() / 3600:.0f} h before close. Dropped: {dropped}.")  # fmt: skip
+               f"quote {DECISION_DELAY.total_seconds() / 3600:.0f} h after open. Dropped: {dropped}.")  # fmt: skip
     out.append(f"Discovery and holdout: disjoint halves of events by ticker hash ({len(disc)} / {len(hold)} markets).")
     out.append("Won = realized YES rate. Strategy columns: mean PnL per contract after fees ± SE clustered by "
-               "series and close date, floored at the binomial SE if prices were right. Flag = profitable by more "
-               "than 2 SE (n >= 30). Only markets quoted on both sides, at most 10c apart, 24 h before close are scored.")
+               "series and decision date, floored at the binomial SE if prices were right. Flag = profitable by more "
+               "than 2 SE (n >= 30). Only markets quoted on both sides, at most 10c apart, 24 h after open are scored.")
     out.append("")
     out += ["## All categories", ""] + table(disc, "Discovery") + table(hold, "Holdout")
     out += ["## By category (discovery)", ""]

@@ -9,6 +9,7 @@ RAW = {
     "outcomes": json.dumps(["Yes", "No"]),
     "outcomePrices": json.dumps(["0", "1"]),
     "clobTokenIds": json.dumps(["tokYes", "tokNo"]),
+    "createdAt": "2025-04-10T12:00:00Z",
     "closedTime": "2025-04-19 05:45:53+00",
     "events": [{"id": "9"}],
     "tags": [{"label": "NBA"}, {"label": "Sports"}],
@@ -19,6 +20,8 @@ def test_parse_market():
     m = parse_market(RAW)
     assert (m.token, m.result, m.event_id, m.category, m.fee_rate) == ("tokYes", 0, "9", "Sports", D("0.05"))
     assert m.closed_at == datetime(2025, 4, 19, 5, 45, 53, tzinfo=timezone.utc)
+    assert m.created_at == datetime(2025, 4, 10, 12, tzinfo=timezone.utc)
+    assert parse_market(dict(RAW, createdAt=None)) is None
     assert parse_market(dict(RAW, outcomePrices=json.dumps(["0.5", "0.5"]))) is None  # 50-50 resolution
     assert parse_market(dict(RAW, outcomePrices=json.dumps(["0", "0"]))) is None  # never resolved
     assert parse_market(dict(RAW, closedTime=None)) is None
@@ -32,9 +35,9 @@ def test_category_priority_and_fees():
     assert parse_time("2026-01-02T03:04:05Z") == datetime(2026, 1, 2, 3, 4, 5, tzinfo=timezone.utc)
 
 
-def mk(i, event, category="Crypto", day=0):
+def mk(i, event, category="Crypto", day=0, life=timedelta(days=3)):
     t = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(days=day)
-    return Closed(f"m{i}", event, f"t{i}", t, i % 2, category, D("0.07"))
+    return Closed(f"m{i}", event, f"t{i}", t, t + life, i % 2, category, D("0.07"))
 
 
 def test_sample_one_per_event_and_caps_category_day():
@@ -55,4 +58,12 @@ def test_build_rows_pays_the_price_both_ways():
     r = rows[0]
     # buy first outcome at 0.30: fee 0.07 * 0.3 * 0.7 = 0.0147; wins -> 0.6853
     assert r.buy_yes == D("0.6853")
-    assert r.mid == D("0.30") and r.cluster == "Crypto|2026-01-01"
+    assert r.mid == D("0.30") and r.cluster == "Crypto|2026-01-02"  # decision date: created + 24 h
+
+
+def test_decision_time_ignores_close_and_skips_short_lived_markets():
+    from polymarket_screen import decision_time
+
+    a, b = mk(1, "e1"), mk(2, "e2", life=timedelta(days=30))
+    assert decision_time(a) == decision_time(b) == datetime(2026, 1, 2, tzinfo=timezone.utc)
+    assert sample([mk(3, "e3", life=timedelta(hours=20))]) == []  # closed before the decision time

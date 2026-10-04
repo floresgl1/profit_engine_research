@@ -77,3 +77,12 @@ def test_unanimous_cell_is_not_certain():
     assert c.buy_yes_se == pytest.approx(math.sqrt(0.97 * 0.03 / 40))
     assert c.spread == pytest.approx(0.02)
     assert flagged(c) == ""  # +0.02 - 0.0006 fee is under 2 * 0.027
+
+
+def test_decision_time_is_open_plus_a_day_regardless_of_close():
+    from calibration_screen import decision_time
+
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    early = Settled("A", "E", t0, t0 + timedelta(days=2), 1, D(1000))
+    late = Settled("B", "E", t0, t0 + timedelta(days=60), 0, D(1000))
+    assert decision_time(early) == decision_time(late) == t0 + timedelta(days=1)
