@@ -45,7 +45,8 @@ START = datetime(2025, 1, 1, tzinfo=timezone.utc)
 END = datetime(2026, 8, 4, tzinfo=timezone.utc)  # archive cutoff: the archive is listable per series
 HORIZON = timedelta(hours=24)
 MIN_VOLUME = Decimal(500)
-PER_SERIES = 6
+PER_SERIES = 3
+SAMPLE_DRAW = 6  # draw this many per series, keep the first PER_SERIES (smaller samples nest in larger)
 BASE_FEE = Decimal("0.07")
 CACHE = "data/screen"
 BANDS = [(0, 5), (5, 10), (10, 20), (20, 35), (35, 50), (50, 65), (65, 80), (80, 90), (90, 95), (95, 100)]
@@ -153,7 +154,7 @@ def sample(markets: list[Settled], per_series: int = PER_SERIES, seed: int = 7) 
     out = []
     for name in sorted(by_series):
         group = sorted(by_series[name], key=lambda m: m.ticker)
-        out += rng.sample(group, min(per_series, len(group)))
+        out += rng.sample(group, min(SAMPLE_DRAW, len(group)))[:per_series]
     return out
 
 

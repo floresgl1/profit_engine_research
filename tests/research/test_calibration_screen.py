@@ -60,3 +60,9 @@ def test_holdout_split_is_stable_and_roughly_half():
     share = sum(is_holdout(e) for e in events) / len(events)
     assert 0.45 < share < 0.55
     assert [is_holdout(e) for e in events] == [is_holdout(e) for e in events]
+
+
+def test_smaller_samples_nest_in_larger():
+    t0 = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ms = [Settled(f"KX{s}-{i}-X", f"KX{s}-{i}", t0, t0 + timedelta(days=2), 0, D(1000)) for s in "ABC" for i in range(20)]
+    assert set(sample(ms, per_series=3)) <= set(sample(ms, per_series=6))
