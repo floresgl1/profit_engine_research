@@ -193,13 +193,17 @@ class RemainingMaxModel:
 
     bias: float
     sigma: float
+    alpha: float = 0.0  # weight on LAMP's current error (latest reading - LAMP's forecast for that hour)
 
-    def distribution(self, observed_max: float | None, lamp_max: float | None, dst: bool) -> HighDistribution:
+    def distribution(
+        self, observed_max: float | None, lamp_max: float | None, dst: bool, error_now: float | None = None
+    ) -> HighDistribution:
         parts = []
         if observed_max is not None:
             parts.append(observed_part(observed_max, UNDERCOUNT_DST if dst else UNDERCOUNT_STANDARD))
         if lamp_max is not None:
-            parts.append(HighDistribution.rounded_normal(lamp_max + self.bias, self.sigma).probs)
+            mean = lamp_max + self.bias + self.alpha * (error_now or 0.0)
+            parts.append(HighDistribution.rounded_normal(mean, self.sigma).probs)
         if not parts:
             raise ValueError("need observations or a forecast")
         return max_of(parts)
@@ -207,31 +211,37 @@ class RemainingMaxModel:
     @classmethod
     def fit(
         cls,
-        cases: list[tuple[float | None, float | None, int, bool]],
+        cases: list[tuple],
         biases: list[float] | None = None,
         sigmas: list[float] | None = None,
+        alphas: list[float] | None = None,
     ) -> RemainingMaxModel:
-        """Grid-search maximum likelihood over (bias, sigma).
+        """Grid-search maximum likelihood over (bias, sigma, alpha).
 
-        cases: (observed_max, lamp_max, actual_high, dst) per training day.
+        cases: (observed_max, lamp_max, actual_high, dst[, error_now]) per training day.
+        With the default alphas=[0.0] this is the v2 fit.
         """
         biases = biases or [b / 4 for b in range(-8, 21)]  # -2.0 .. 5.0
         sigmas = sigmas or [s / 4 for s in range(2, 25)]  # 0.5 .. 6.0
-        usable = [c for c in cases if c[1] is not None]
+        alphas = alphas or [0.0]
+        usable = [(*c, None)[:5] for c in cases if c[1] is not None]
         if len(usable) < 10:
             raise ValueError("need at least 10 cases with a forecast")
         best, best_ll = None, -math.inf
         for b in biases:
             for s in sigmas:
-                model = cls(b, s)
-                ll = sum(math.log(max(model.distribution(o, f, d).probs.get(h, 0.0), 1e-9)) for o, f, h, d in usable)
-                if ll > best_ll:
-                    best, best_ll = model, ll
+                for a in alphas:
+                    model = cls(b, s, a)
+                    ll = sum(
+                        math.log(max(model.distribution(o, f, d, e).probs.get(h, 0.0), 1e-9)) for o, f, h, d, e in usable
+                    )
+                    if ll > best_ll:
+                        best, best_ll = model, ll
         return best
 
     def to_dict(self) -> dict[str, float]:
-        return {"bias": self.bias, "sigma": self.sigma}
+        return {"bias": self.bias, "sigma": self.sigma, "alpha": self.alpha}
 
     @classmethod
     def from_dict(cls, d: dict[str, float]) -> RemainingMaxModel:
-        return cls(bias=d["bias"], sigma=d["sigma"])
+        return cls(bias=d["bias"], sigma=d["sigma"], alpha=d.get("alpha", 0.0))

@@ -172,3 +172,11 @@ class TestRemainingMax:
     def test_round_trip(self):
         m = RemainingMaxModel(bias=1.25, sigma=2.0)
         assert RemainingMaxModel.from_dict(m.to_dict()) == m
+
+
+def test_alpha_shifts_forecast_by_current_error():
+    m = RemainingMaxModel(bias=0.0, sigma=1.0, alpha=0.5)
+    # forecast-only, LAMP running 4 degrees cold now -> mean 70 + 0.5 * 4 = 72
+    assert m.distribution(None, 70.0, dst=True, error_now=4.0).mean() == pytest.approx(72.0, abs=1e-6)
+    assert m.distribution(None, 70.0, dst=True).mean() == pytest.approx(70.0, abs=1e-6)
+    assert RemainingMaxModel.from_dict({"bias": 0.0, "sigma": 1.0}).alpha == 0.0
