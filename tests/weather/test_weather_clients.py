@@ -8,10 +8,21 @@ import httpx
 import pytest
 
 from profit_engine.venues.http import ReadOnlyHttp
-from profit_engine.weather import AcisClient, IemAsosClient, clock_window, is_dst, is_transition, lst_window
+from profit_engine.weather import (
+    AcisClient,
+    IemAsosClient,
+    clock_window,
+    is_dst,
+    is_transition,
+    lst_window,
+)
 from profit_engine.weather.acis import parse_value
 from profit_engine.weather.iem import parse_csv
-from profit_engine.weather.kalshi_temps import event_day, group_events, settlement_source
+from profit_engine.weather.kalshi_temps import (
+    event_day,
+    group_events,
+    settlement_source,
+)
 
 NY = ZoneInfo("America/New_York")
 
@@ -130,3 +141,25 @@ class TestKalshiTemps:
     def test_conflicting_values_become_none(self):
         rows = group_events([market("KXHIGHNY-26AUG14", "91", TWC_RULES), market("KXHIGHNY-26AUG14", "92", TWC_RULES)])
         assert rows[0].value is None
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        ("83.00", D("83.00")),
+        ("No", None),
+        ("", None),
+        (None, None),
+        # Real KXHIGHMIA-24NOV05 value (trimmed)
+        ("84. Although the Daily Climate Report was not finalized for November 5th, the NWS provides hourly high data", D("84")),
+    ],
+)
+def test_parse_expiration_value(raw, expected):
+    from profit_engine.weather.kalshi_temps import parse_expiration_value
+
+    assert parse_expiration_value(raw) == expected
+
+
+def test_text_values_do_not_break_grouping():
+    rows = group_events([market("KXHIGHMIA-26APR11", "No", TWC_RULES), market("KXHIGHMIA-26APR12", "84. Although...", TWC_RULES)])
+    assert [(r.day.isoformat(), r.value) for r in rows] == [("2026-04-11", None), ("2026-04-12", D("84"))]

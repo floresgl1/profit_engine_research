@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Protocol
 
@@ -194,13 +194,16 @@ class RemainingMaxModel:
     bias: float
     sigma: float
     alpha: float = 0.0  # weight on LAMP's current error (latest reading - LAMP's forecast for that hour)
+    # Station's undercount (official high - max reading, days per value); defaults are Central Park's.
+    undercount_dst: dict[int, int] = field(default_factory=lambda: dict(UNDERCOUNT_DST))
+    undercount_standard: dict[int, int] = field(default_factory=lambda: dict(UNDERCOUNT_STANDARD))
 
     def distribution(
         self, observed_max: float | None, lamp_max: float | None, dst: bool, error_now: float | None = None
     ) -> HighDistribution:
         parts = []
         if observed_max is not None:
-            parts.append(observed_part(observed_max, UNDERCOUNT_DST if dst else UNDERCOUNT_STANDARD))
+            parts.append(observed_part(observed_max, self.undercount_dst if dst else self.undercount_standard))
         if lamp_max is not None:
             mean = lamp_max + self.bias + self.alpha * (error_now or 0.0)
             parts.append(HighDistribution.rounded_normal(mean, self.sigma).probs)
@@ -215,6 +218,8 @@ class RemainingMaxModel:
         biases: list[float] | None = None,
         sigmas: list[float] | None = None,
         alphas: list[float] | None = None,
+        undercount_dst: dict[int, int] | None = None,
+        undercount_standard: dict[int, int] | None = None,
     ) -> RemainingMaxModel:
         """Grid-search maximum likelihood over (bias, sigma, alpha).
 
@@ -231,7 +236,9 @@ class RemainingMaxModel:
         for b in biases:
             for s in sigmas:
                 for a in alphas:
-                    model = cls(b, s, a)
+                    model = cls(
+                        b, s, a, dict(undercount_dst or UNDERCOUNT_DST), dict(undercount_standard or UNDERCOUNT_STANDARD)
+                    )
                     ll = sum(
                         math.log(max(model.distribution(o, f, d, e).probs.get(h, 0.0), 1e-9)) for o, f, h, d, e in usable
                     )
@@ -239,9 +246,24 @@ class RemainingMaxModel:
                         best, best_ll = model, ll
         return best
 
-    def to_dict(self) -> dict[str, float]:
-        return {"bias": self.bias, "sigma": self.sigma, "alpha": self.alpha}
+    def to_dict(self) -> dict:
+        return {
+            "bias": self.bias,
+            "sigma": self.sigma,
+            "alpha": self.alpha,
+            "undercount_dst": {str(k): v for k, v in self.undercount_dst.items()},
+            "undercount_standard": {str(k): v for k, v in self.undercount_standard.items()},
+        }
 
     @classmethod
-    def from_dict(cls, d: dict[str, float]) -> RemainingMaxModel:
-        return cls(bias=d["bias"], sigma=d["sigma"], alpha=d.get("alpha", 0.0))
+    def from_dict(cls, d: dict) -> RemainingMaxModel:
+        def counts(key: str, default: dict[int, int]) -> dict[int, int]:
+            return {int(k): v for k, v in d[key].items()} if key in d else dict(default)
+
+        return cls(
+            bias=d["bias"],
+            sigma=d["sigma"],
+            alpha=d.get("alpha", 0.0),
+            undercount_dst=counts("undercount_dst", UNDERCOUNT_DST),
+            undercount_standard=counts("undercount_standard", UNDERCOUNT_STANDARD),
+        )

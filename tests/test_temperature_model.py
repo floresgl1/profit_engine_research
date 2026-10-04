@@ -180,3 +180,13 @@ def test_alpha_shifts_forecast_by_current_error():
     assert m.distribution(None, 70.0, dst=True, error_now=4.0).mean() == pytest.approx(72.0, abs=1e-6)
     assert m.distribution(None, 70.0, dst=True).mean() == pytest.approx(70.0, abs=1e-6)
     assert RemainingMaxModel.from_dict({"bias": 0.0, "sigma": 1.0}).alpha == 0.0
+
+
+def test_station_undercount_is_used_and_round_trips():
+    # A station whose official high always equals the rounded max reading.
+    m = RemainingMaxModel(bias=0.0, sigma=1.0, undercount_dst={0: 1}, undercount_standard={0: 1})
+    assert m.distribution(75.0, None, dst=True).probs == {75: 1.0}
+    assert RemainingMaxModel.from_dict(m.to_dict()) == m
+    # Old parameter files without undercount fields fall back to Central Park's.
+    old = RemainingMaxModel.from_dict({"bias": 0.0, "sigma": 1.0})
+    assert old.undercount_dst == {-1: 3, 0: 324, 1: 489, 2: 100, 3: 13}

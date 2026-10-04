@@ -1,4 +1,4 @@
-"""Live model for Kalshi daily-high markets (KXHIGHNY): NBM forecast + today's observations.
+"""Live models for Kalshi daily-high markets (KXHIGHNY and other cities, see weather/stations.py).
 
 For each event it builds one distribution over the integer high and prices
 every bucket from it, so an event's six predictions always sum to 1.
@@ -30,10 +30,11 @@ from profit_engine.models.temperature import (
     SpreadModel,
     predict_high,
 )
-from profit_engine.weather.iem import CENTRAL_PARK, IemAsosClient, drop_spikes
+from profit_engine.weather.iem import IemAsosClient, drop_spikes
 from profit_engine.weather.kalshi_temps import Bucket, event_day
 from profit_engine.weather.lamp import LampClient, current_error
 from profit_engine.weather.nbm import NbmClient, NbmRun
+from profit_engine.weather.stations import CITIES, City
 from profit_engine.weather.windows import is_dst
 
 log = logging.getLogger(__name__)
@@ -57,11 +58,11 @@ class TemperatureParams:
             lead_times={k: tuple(v) for k, v in raw["lead_times"].items()},
         )
 
-    def lead_for(self, target: date, now: datetime) -> str:
+    def lead_for(self, target: date, now: datetime, zone: ZoneInfo = NY) -> str:
         """The latest fitted lead time already reached at `now` (the earliest one before that)."""
         reached = []
         for name, (offset, hour) in self.lead_times.items():
-            at = datetime.combine(target + timedelta(days=offset), time(hour), tzinfo=NY)
+            at = datetime.combine(target + timedelta(days=offset), time(hour), tzinfo=zone)
             if at <= now:
                 reached.append((at, name))
         if reached:
@@ -81,10 +82,12 @@ def bucket_of(market: Market) -> Bucket | None:
     return Bucket(market.market_id, meta["strike_type"], dec("floor_strike"), dec("cap_strike"))
 
 
-def midnight_risk(run: NbmRun, target: date, center: float, margin: float = MIDNIGHT_MARGIN) -> bool:
+def midnight_risk(
+    run: NbmRun, target: date, center: float, margin: float = MIDNIGHT_MARGIN, zone: ZoneInfo = NY
+) -> bool:
     """True if a forecast temperature near either midnight of `target` is within `margin` of the high."""
     for day in (target, target + timedelta(days=1)):
-        midnight = datetime.combine(day, time(0), tzinfo=NY).astimezone(timezone.utc)
+        midnight = datetime.combine(day, time(0), tzinfo=zone).astimezone(timezone.utc)
         for at, temp in run.temps.items():
             if abs((at - midnight).total_seconds()) <= 2 * 3600 and temp >= center - margin:
                 return True
@@ -99,17 +102,22 @@ class KalshiHighTemperature:
         params: TemperatureParams,
         nbm: NbmClient,
         iem: IemAsosClient,
-        series: str = "KXHIGHNY",
+        city: City = CITIES["KXHIGHNY"],
         now: Callable[[], datetime] = utc_now,
         refresh: timedelta = timedelta(minutes=10),
     ) -> None:
         self.params = params
         self.nbm = nbm
         self.iem = iem
-        self.series = series
+        self.city = city
+        self.series = city.series
+        self.zone = city.zone
         self._now = now
         self._refresh = refresh
         self._dists: dict[date, tuple[datetime, HighDistribution | None]] = {}
+        station = getattr(nbm, "station", city.icao)
+        if station != city.icao:
+            raise ValueError(f"{city.series} model needs NBM station {city.icao}, got {station}")
 
     def predict(self, market: Market, book: OrderBook) -> Decimal | None:
         if market.venue != "kalshi" or market.venue_meta.get("series_ticker") != self.series:
@@ -138,28 +146,27 @@ class KalshiHighTemperature:
         if forecast is None:
             log.info("%s: no NBM forecast for %s", self.name, target)
             return None
-        model = self.params.leads[self.params.lead_for(target, now.astimezone(NY))]
+        model = self.params.leads[self.params.lead_for(target, now.astimezone(self.zone), self.zone)]
         center = forecast.txn + model.bias
-        if midnight_risk(run, target, center):
+        if midnight_risk(run, target, center, zone=self.zone):
             log.info("%s: abstaining on %s, a midnight hour is forecast near the high", self.name, target)
             return None
         return predict_high(model, forecast.txn, forecast.xnd, self._observed_max(target, now), self._low_band(target))
 
     def _observations(self, target: date, now: datetime) -> list:
         """Today's spike-checked readings from 01:00 local up to now."""
-        start = datetime.combine(target, time(1), tzinfo=NY).astimezone(timezone.utc)
+        start = datetime.combine(target, time(1), tzinfo=self.zone).astimezone(timezone.utc)
         if now <= start:
             return []
-        obs = self.iem.temperatures(CENTRAL_PARK, start.date(), (now + timedelta(days=1)).date())
+        obs = self.iem.temperatures(self.city.iem, start.date(), (now + timedelta(days=1)).date())
         return [o for o in drop_spikes(obs) if start <= o.at <= now]
 
     def _observed_max(self, target: date, now: datetime) -> float | None:
         values = [float(o.tmpf) for o in self._observations(target, now)]
         return max(values) if values else None
 
-    @staticmethod
-    def _low_band(target: date) -> float:
-        return LOW_BAND_DST if is_dst(target, NY) else LOW_BAND_STANDARD
+    def _low_band(self, target: date) -> float:
+        return LOW_BAND_DST if is_dst(target, self.zone) else LOW_BAND_STANDARD
 
 
 class KalshiHighTemperatureLamp(KalshiHighTemperature):
@@ -177,7 +184,7 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
         lead_times: dict[str, tuple[int, int]],
         lamp: LampClient,
         iem: IemAsosClient,
-        series: str = "KXHIGHNY",
+        city: City = CITIES["KXHIGHNY"],
         now: Callable[[], datetime] = utc_now,
         refresh: timedelta = timedelta(minutes=10),
     ) -> None:
@@ -185,10 +192,16 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
         self.lead_times = lead_times
         self.lamp = lamp
         self.iem = iem
-        self.series = series
+        self.city = city
+        self.series = city.series
+        self.zone = city.zone
         self._now = now
         self._refresh = refresh
         self._dists = {}
+        station = getattr(lamp, "station", city.icao)
+        if station != city.icao:
+            # A forecast for the wrong station produces confident, wrong prices; refuse to start.
+            raise ValueError(f"{city.series} model needs LAMP station {city.icao}, got {station}")
 
     @classmethod
     def from_file(cls, path: str | Path, lamp: LampClient, iem: IemAsosClient, **kwargs) -> KalshiHighTemperatureLamp:
@@ -196,14 +209,15 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
         if raw.get("model") != "lamp":
             raise ValueError(f"{path} is not a LAMP model parameter file")
         leads = {k: RemainingMaxModel.from_dict(v) for k, v in raw["leads"].items()}
+        kwargs.setdefault("city", CITIES[raw.get("series", "KXHIGHNY")])
         model = cls(leads, {k: tuple(v) for k, v in raw["lead_times"].items()}, lamp, iem, **kwargs)
         if raw.get("version", 2) != 2:
             model.name = f"kxhigh_lamp_v{raw['version']}"  # distinct name so versions score side by side
         return model
 
     def _build(self, target: date, now: datetime) -> HighDistribution | None:
-        day_start = datetime.combine(target, time(1), tzinfo=NY).astimezone(timezone.utc)
-        day_end = datetime.combine(target + timedelta(days=1), time(0), tzinfo=NY).astimezone(timezone.utc)
+        day_start = datetime.combine(target, time(1), tzinfo=self.zone).astimezone(timezone.utc)
+        day_end = datetime.combine(target + timedelta(days=1), time(0), tzinfo=self.zone).astimezone(timezone.utc)
         if now >= day_end:
             return None  # day over; the outcome is out of the model's hands
         run = self.lamp.latest_run(now, until=day_end + timedelta(hours=1))
@@ -223,6 +237,8 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
             if near is not None and near >= expected_high - MIDNIGHT_MARGIN:
                 log.info("%s: abstaining on %s, a midnight hour is forecast near the high", self.name, target)
                 return None
-        lead = TemperatureParams(variant="lamp", leads={}, lead_times=self.lead_times).lead_for(target, now.astimezone(NY))
+        lead = TemperatureParams(variant="lamp", leads={}, lead_times=self.lead_times).lead_for(
+            target, now.astimezone(self.zone), self.zone
+        )
         error_now = current_error(run, todays, now) if todays else None
-        return self.leads[lead].distribution(observed, remaining, is_dst(target, NY), error_now)
+        return self.leads[lead].distribution(observed, remaining, is_dst(target, self.zone), error_now)

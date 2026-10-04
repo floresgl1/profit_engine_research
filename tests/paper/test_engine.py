@@ -9,7 +9,16 @@ from datetime import timedelta
 from decimal import Decimal as D
 
 import pytest
-from factories import DOC_ASKS, DOC_BIDS, KALSHI_DIRECT_FEES, T0, L, make_book, make_market, make_order
+from factories import (
+    DOC_ASKS,
+    DOC_BIDS,
+    KALSHI_DIRECT_FEES,
+    T0,
+    L,
+    make_book,
+    make_market,
+    make_order,
+)
 
 from profit_engine.core import FillStatus, MarketStatus, Outcome, Side
 from profit_engine.paper import FillConfig, contract_levels, simulate_fill

@@ -7,7 +7,13 @@ import pytest
 from factories import T0
 
 from profit_engine.core import Prediction
-from profit_engine.scoring import Selection, brier, calibration_table, compare, full_report
+from profit_engine.scoring import (
+    Selection,
+    brier,
+    calibration_table,
+    compare,
+    full_report,
+)
 from profit_engine.storage import ScoredRow
 
 

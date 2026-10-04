@@ -7,7 +7,14 @@ import httpx
 import pytest
 
 from profit_engine.venues.http import ReadOnlyHttp
-from profit_engine.weather.kalshi_temps import Bucket, Quote, bucket_from, parse_candles, price_history, quote_at
+from profit_engine.weather.kalshi_temps import (
+    Bucket,
+    Quote,
+    bucket_from,
+    parse_candles,
+    price_history,
+    quote_at,
+)
 from profit_engine.weather.nbm import AVAILABILITY_LAG, NbmClient, parse_run
 
 

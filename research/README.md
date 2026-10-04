@@ -158,3 +158,42 @@ into the afternoon. Spread tightened from 2.0 to 1.75°F.
 **Still no edge.** The market remains sharper, most at 14:00. The live
 model uses hourly LAMP runs (the backtest only has 6-hourly), so its live
 skill may be a little better; the forward log will tell.
+
+## v3 across cities (`cities_backtest.py`)
+
+**Question.** Does the v3 model find an edge in any other Kalshi daily-high
+city, where markets may be less efficient than NYC's?
+
+**Method.** Same model, leads and train/test split as NYC v3, run per city
+from weather/stations.py, each with its own station undercount calibration
+and its own market as the benchmark (identical rows).
+
+**Result** (`cities_backtest.md`): **no edge in any city.**
+
+| City | Overall skill | Best lead skill | 14:00 skill |
+|---|---|---|---|
+| Philadelphia | -0.12 | -0.09 (10:00) | -0.24 |
+| New York (v3) | -0.16 | -0.13 (day before) | -0.27 |
+| Chicago | -0.17 | -0.14 (day before, 10:00) | -0.28 |
+| Los Angeles | -0.23 | -0.13 (day before) | -1.17 |
+| Denver | -0.24 | -0.21 (12:00) | -0.30 |
+| Austin | -0.25 | -0.17 (day before) | -0.30 |
+| Miami | -0.26 | -0.15 (day before) | -0.68 |
+
+**Reading it.**
+- The gap is consistent: every city's market beats the model by 10-26%,
+  and every afternoon gap is the largest. The smaller markets are not
+  softer: their market Brier scores (0.11-0.13) match NYC's.
+- Where the afternoon is most predictable to a local (LA's sea breeze,
+  Miami's steady tropical days), the market is near-certain by 14:00 and
+  the model, which knows nothing about local regimes, falls furthest
+  behind.
+- Fitted parameters look physically sensible per city: correction weight
+  0.25-0.75 on the same day, day-before spread from 1.75°F (Miami) to
+  3.25°F (Denver).
+
+**What it means.** A public-forecast model, however carefully calibrated,
+doesn't beat these markets: the market already prices LAMP/NBM-level
+information and then some. An edge, if any, would need information or
+speed the crowd lacks, not a better treatment of the same forecasts.
+Per-city parameters are saved in research/params/ for live logging only.

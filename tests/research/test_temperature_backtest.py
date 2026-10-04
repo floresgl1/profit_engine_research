@@ -2,7 +2,13 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal as D
 
 import pytest
-from temperature_backtest import Case, build_cases, decision_time, evaluate, observed_max
+from temperature_backtest import (
+    Case,
+    build_cases,
+    decision_time,
+    evaluate,
+    observed_max,
+)
 
 from profit_engine.models.temperature import SpreadModel
 from profit_engine.weather.iem import Observation

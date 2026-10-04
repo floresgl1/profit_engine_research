@@ -2,9 +2,23 @@ from datetime import timedelta
 from decimal import Decimal as D
 
 import pytest
-from factories import DOC_ASKS, DOC_BIDS, KALSHI_DIRECT_FEES, T0, L, make_book, make_market
+from factories import (
+    DOC_ASKS,
+    DOC_BIDS,
+    KALSHI_DIRECT_FEES,
+    T0,
+    L,
+    make_book,
+    make_market,
+)
 
-from profit_engine.core import FillStatus, InvalidOrderBook, MarketStatus, OrderBook, Resolution
+from profit_engine.core import (
+    FillStatus,
+    InvalidOrderBook,
+    MarketStatus,
+    OrderBook,
+    Resolution,
+)
 from profit_engine.ingest import Pipeline, PipelineConfig, SkipMonitor
 from profit_engine.models import MidpointBaseline
 from profit_engine.paper import (
@@ -225,8 +239,9 @@ class TestPaperTradingInLoop:
 def test_rebuild_interleaves_settlements(store):
     # Cash 5: buy 10 YES @ 0.44 (4.40), settle YES (+10), then buy 10 more (4.40).
     # Replaying all fills before settlements would run out of cash on the second buy.
-    from profit_engine.paper import simulate_fill
     from factories import make_order
+
+    from profit_engine.paper import simulate_fill
 
     config = FillConfig(max_depth_fraction=D("1"))
     first = simulate_fill(make_order("10", market_id="A"), make_market(market_id="A"), make_book(market_id="A"), config)
