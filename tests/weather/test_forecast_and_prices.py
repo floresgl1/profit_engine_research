@@ -103,3 +103,17 @@ class TestQuotes:
         out = price_history(http, [f"T{i}" for i in range(150)], utc(2026, 9, 1), utc(2026, 9, 2), historical=False)
         assert len(out) == 150 and len(seen) == 2
         assert all(r.method == "GET" for r in seen)
+
+
+def test_archive_404_falls_back_to_live():
+    def handler(request):
+        if request.url.path.startswith("/historical/"):
+            if "OLD" in request.url.path:
+                return httpx.Response(200, json={"candlesticks": [], "ticker": "OLD"})
+            return httpx.Response(404, json={"error": {"code": "not_found"}})
+        tickers = request.url.params["market_tickers"].split(",")
+        return httpx.Response(200, json={"markets": [{"market_ticker": t, "candlesticks": []} for t in tickers]})
+
+    http = ReadOnlyHttp("https://k.test", transport=httpx.MockTransport(handler), min_interval=0, max_retries=0)
+    out = price_history(http, ["OLD", "RECENT"], utc(2026, 8, 2), utc(2026, 8, 4), historical=True)
+    assert set(out) == {"OLD", "RECENT"}

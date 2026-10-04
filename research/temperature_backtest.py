@@ -155,10 +155,13 @@ def load(start: date, end: date, test_start: date, cache: str | None):
             data = pickle.load(fh)
 
     def save():
+        # Write-then-rename: a failure mid-write must never destroy the previous good cache.
         if cache:
             os.makedirs(os.path.dirname(cache) or ".", exist_ok=True)
-            with open(cache, "wb") as fh:
+            tmp = cache + ".tmp"
+            with open(tmp, "wb") as fh:
                 pickle.dump(data, fh)
+            os.replace(tmp, cache)
 
     from profit_engine.venues.http import ReadOnlyHttp
     from profit_engine.venues.kalshi import BASE_URL as KALSHI_URL

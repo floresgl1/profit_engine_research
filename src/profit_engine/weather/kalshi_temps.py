@@ -15,7 +15,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from profit_engine.venues.http import ReadOnlyHttp
+from profit_engine.venues.http import ReadOnlyHttp, VenueHttpError
 
 log = logging.getLogger(__name__)
 
@@ -163,9 +163,20 @@ def price_history(
     params = {"start_ts": str(int(start.timestamp())), "end_ts": str(int(end.timestamp())), "period_interval": "60"}
     out: dict[str, list[Quote]] = {}
     if historical:
+        live = []
         for ticker in tickers:
-            data = http.get_json(f"/historical/markets/{ticker}/candlesticks", params)
+            try:
+                data = http.get_json(f"/historical/markets/{ticker}/candlesticks", params)
+            except VenueHttpError as exc:
+                # The archive cutoff is by settlement time, so markets settled just after it
+                # are still live even if their event date is before it.
+                if exc.status != 404:
+                    raise
+                live.append(ticker)
+                continue
             out[ticker] = parse_candles(data.get("candlesticks") or [])
+        if live:
+            out.update(price_history(http, live, start, end, historical=False))
         return out
     for i in range(0, len(tickers), 100):
         data = http.get_json("/markets/candlesticks", dict(params, market_tickers=",".join(tickers[i : i + 100])))
