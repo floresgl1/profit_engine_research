@@ -8,11 +8,12 @@ and the rules text records which agency's number was used.
 from __future__ import annotations
 
 import logging
+import re
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from profit_engine.venues.http import ReadOnlyHttp, VenueHttpError
@@ -73,13 +74,33 @@ def settlement_source(rules: str) -> str:
     return "unspecified"
 
 
+_LEADING_NUMBER = re.compile(r"^\s*(-?\d+(?:\.\d+)?)")
+
+
+def parse_expiration_value(raw: Any, ticker: str | None = None) -> Decimal | None:
+    """Kalshi's settlement value. Usually "83.00", but occasionally free text:
+    "No" (no number: treated as missing) or "84. Although the Daily Climate
+    Report was not finalized..." (leading number used). Both are logged.
+    """
+    if raw in (None, ""):
+        return None
+    text = str(raw)
+    try:
+        return Decimal(text)
+    except InvalidOperation:
+        pass
+    match = _LEADING_NUMBER.match(text)
+    log.warning("%s: non-numeric expiration_value %r -> %s", ticker, text[:80], match.group(1) if match else "missing")
+    return Decimal(match.group(1)) if match else None
+
+
 def group_events(markets: list[dict[str, Any]]) -> list[SettledTemperature]:
     by_event: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for market in markets:
         by_event[market["event_ticker"]].append(market)
     settled = []
     for event, members in by_event.items():
-        values = {Decimal(m["expiration_value"]) for m in members if m.get("expiration_value") not in (None, "")}
+        values = {v for m in members if (v := parse_expiration_value(m.get("expiration_value"), m.get("ticker"))) is not None}
         sources = {settlement_source(m.get("rules_primary", "")) for m in members}
         if len(values) > 1:
             log.warning("%s: markets disagree on expiration_value %s", event, sorted(values))
