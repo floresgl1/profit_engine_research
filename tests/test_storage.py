@@ -131,6 +131,18 @@ class TestResolutionsAndPredictions:
         assert [r.prediction.model for r in store.scored_predictions("other")] == ["other"]
         assert store.models() == ["midpoint", "other"]
 
+    def test_scored_predictions_filter_by_series(self, store):
+        for market_id, series in [("CHI-1", "KXHIGHCHI"), ("NY-1", "KXHIGHNY"), ("MIA-1", "KXHIGHMIA")]:
+            store.upsert_market(make_market(market_id=market_id, venue_meta={"series_ticker": series}), at(0))
+            store.add_prediction(self.prediction(market_id))
+            store.upsert_resolution(Resolution("kalshi", market_id, D("1"), at(10)))
+        assert len(store.scored_predictions()) == 3
+        assert [r.prediction.market_id for r in store.scored_predictions(series=["KXHIGHCHI"])] == ["CHI-1"]
+        both = store.scored_predictions(series=["KXHIGHNY", "KXHIGHMIA"])
+        assert sorted(r.prediction.market_id for r in both) == ["MIA-1", "NY-1"]
+        assert store.scored_predictions(model="other", series=["KXHIGHCHI"]) == []
+        assert store.scored_predictions(series=["KXHIGHDEN"]) == []
+
     def test_prediction_round_trip(self, store):
         p = self.prediction("A")
         store.add_prediction(p)
@@ -154,3 +166,24 @@ def test_schema_version_mismatch(tmp_path):
         conn.execute("UPDATE schema_version SET version = 99")
     with pytest.raises(RuntimeError, match="schema"):
         Store(path)
+
+
+def test_score_cli_filters_by_series(tmp_path, capsys):
+    from profit_engine import cli
+
+    db = tmp_path / "r.db"
+    store = Store(db)
+    for i, (series, outcome) in enumerate([("KXHIGHCHI", "1"), ("KXHIGHCHI", "0"), ("KXHIGHNY", "1")]):
+        market_id = f"{series}-{i}"
+        store.upsert_market(make_market(market_id=market_id, venue_meta={"series_ticker": series}), at(0))
+        store.add_prediction(Prediction.from_book("midpoint", D("0.43"), make_book(market_id=market_id), at(2)))
+        store.upsert_resolution(Resolution("kalshi", market_id, D(outcome), at(10)))
+    store.close()
+
+    assert cli.main(["--db", str(db), "score", "--series", "KXHIGHCHI"]) == 0
+    chi = capsys.readouterr().out
+    assert cli.main(["--db", str(db), "score", "--series", "KXHIGHDEN"]) == 0
+    assert "No resolved predictions" in capsys.readouterr().out
+    assert cli.main(["--db", str(db), "score"]) == 0
+    everything = capsys.readouterr().out
+    assert chi.startswith("series: KXHIGHCHI") and chi != everything
