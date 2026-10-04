@@ -11,6 +11,7 @@ Error policy:
 from __future__ import annotations
 
 import logging
+import resource
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -25,6 +26,12 @@ from profit_engine.venues.base import MarketDataSource
 from profit_engine.venues.http import VenueHttpError
 
 log = logging.getLogger(__name__)
+
+
+def cpu_seconds() -> float:
+    """CPU time used by this process so far (user + system), for hosts with a CPU budget."""
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    return usage.ru_utime + usage.ru_stime
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,13 +98,15 @@ class Pipeline:
             stats = self.run_cycle()
             done += 1
             log.info(
-                "cycle %d: %d snapshots, %d skipped, %d predictions, %d orders, %d resolutions%s",
+                "cycle %d: %d snapshots, %d skipped, %d predictions, %d orders, %d resolutions, "
+                "cpu %.1fs total%s",
                 done,
                 stats.snapshots,
                 stats.skipped,
                 stats.predictions,
                 stats.orders,
                 stats.resolutions,
+                cpu_seconds(),
                 f", errors: {stats.venue_errors}" if stats.venue_errors else "",
             )
             if cycles is not None and done >= cycles:

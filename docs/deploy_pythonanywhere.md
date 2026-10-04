@@ -1,0 +1,57 @@
+# Running the engine on PythonAnywhere
+
+Needs a paid (Developer) account: free accounts have no always-on tasks,
+100 CPU-seconds a day and an internet allowlist. The engine uses the one
+always-on task; finance_bot's scheduled tasks are unaffected.
+
+## One-time setup (Bash console on PythonAnywhere)
+
+```bash
+cd ~
+git clone https://github.com/floresgl1/profit_engine_research.git
+# Private repo: use a fine-grained GitHub token with read-only "Contents"
+# access to this repository, entered as the password when prompted.
+cd profit_engine_research
+python3.11 -m venv .venv            # or any installed python3.x >= 3.11
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -e .
+.venv/bin/python -m pytest -q 2>/dev/null || .venv/bin/pip install pytest && .venv/bin/python -m pytest -q
+mkdir -p data
+```
+
+Smoke test (3 cycles, then exits):
+
+```bash
+.venv/bin/profit-engine --db data/research.db ingest --kalshi-series KXHIGHNY \
+  --temperature-params research/temperature_params.json --interval 60 --cycles 3
+.venv/bin/profit-engine --db data/research.db status
+```
+
+## Always-on task
+
+Tasks page -> Always-on tasks -> command:
+
+```
+cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/research.db ingest --kalshi-series KXHIGHNY --temperature-params research/temperature_params.json --interval 60
+```
+
+No `--paper-trade`: the midpoint baseline never trades and the
+temperature model is not good enough to (research/README.md). Both log
+predictions for scoring.
+
+## Watching it
+
+- Task log (Tasks page -> log link): one line per cycle ending
+  `cpu Ns total`. The Developer plan allows 5,000 CPU-seconds per day,
+  shared with finance_bot; if the task exceeds it, it is stopped until the
+  next day. Check the per-day growth after the first day.
+- Skip-rate alerts appear in the same log as `ALERT`.
+- `profit-engine --db data/research.db status` and `... score` from a console.
+
+## Updating
+
+```bash
+cd ~/profit_engine_research && git pull && .venv/bin/pip install -e .
+```
+
+then restart the task from the Tasks page.
