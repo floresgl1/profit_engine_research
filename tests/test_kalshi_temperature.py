@@ -217,3 +217,33 @@ def test_current_error_shifts_mean_by_alpha():
     d5 = KalshiHighTemperatureLamp(half, PARAMS.lead_times, FakeLamp(temps), FakeIem(obs), now=lambda: now)._build(DAY, now)
     # forecast part centred at 60 vs 62; both maxed with the observed part (64 + undercount)
     assert d5.mean() > d0.mean()
+
+
+def test_lamp_model_rejects_wrong_station(tmp_path):
+    # Regression: the CLI once gave every city's model Central Park's LAMP client.
+    from profit_engine.venues.http import ReadOnlyHttp
+    from profit_engine.weather.lamp import LampClient
+    from profit_engine.weather.stations import CITIES
+
+    nyc_client = LampClient(ReadOnlyHttp("https://iem.test"), station="KNYC")
+    with pytest.raises(ValueError, match="KMIA"):
+        KalshiHighTemperatureLamp(V2_LEADS, PARAMS.lead_times, nyc_client, FakeIem([]), city=CITIES["KXHIGHMIA"])
+
+
+def test_cli_builds_city_specific_clients(tmp_path, monkeypatch):
+    from profit_engine import cli
+    from profit_engine.models.kalshi_temperature import KalshiHighTemperatureLamp as Lamp
+
+    built = []
+    real_from_file = Lamp.from_file.__func__
+
+    def spy(cls, path, lamp, iem, **kwargs):
+        built.append(lamp.station)
+        raise SystemExit(0)  # stop before the ingest loop starts
+
+    monkeypatch.setattr(Lamp, "from_file", classmethod(spy))
+    with pytest.raises(SystemExit):
+        cli.main(["--db", str(tmp_path / "x.db"), "ingest", "--kalshi-series", "KXHIGHMIA",
+                  "--temperature-params", "research/params/KXHIGHMIA.json", "--cycles", "1"])
+    assert built == ["KMIA"]
+    assert real_from_file is not None

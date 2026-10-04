@@ -70,13 +70,17 @@ def cmd_ingest(args: argparse.Namespace) -> int:
         )
         from profit_engine.weather import iem, lamp, nbm
 
+        from profit_engine.weather.stations import CITIES
+
+        raw = json.loads(Path(params_path).read_text())
+        city = CITIES[raw.get("series", "KXHIGHNY")]
         iem_client = IemAsosClient(ReadOnlyHttp(iem.BASE_URL, timeout=60))
-        if json.loads(Path(params_path).read_text()).get("model") == "lamp":
-            lamp_client = lamp.LampClient(ReadOnlyHttp(lamp.BASE_URL, timeout=60))
+        if raw.get("model") == "lamp":
+            lamp_client = lamp.LampClient(ReadOnlyHttp(lamp.BASE_URL, timeout=60), station=city.icao)
             models.append(KalshiHighTemperatureLamp.from_file(params_path, lamp_client, iem_client))
         else:
-            nbm_client = nbm.NbmClient(ReadOnlyHttp(nbm.BASE_URL, timeout=60))
-            models.append(KalshiHighTemperature(TemperatureParams.load(params_path), nbm_client, iem_client))
+            nbm_client = nbm.NbmClient(ReadOnlyHttp(nbm.BASE_URL, timeout=60), station=city.icao)
+            models.append(KalshiHighTemperature(TemperatureParams.load(params_path), nbm_client, iem_client, city=city))
     names = [m.name for m in models]
     if args.paper_trade and args.trade_model not in names:
         print(f"--trade-model must be one of {names}", file=sys.stderr)

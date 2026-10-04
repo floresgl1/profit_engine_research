@@ -115,6 +115,9 @@ class KalshiHighTemperature:
         self._now = now
         self._refresh = refresh
         self._dists: dict[date, tuple[datetime, HighDistribution | None]] = {}
+        station = getattr(nbm, "station", city.icao)
+        if station != city.icao:
+            raise ValueError(f"{city.series} model needs NBM station {city.icao}, got {station}")
 
     def predict(self, market: Market, book: OrderBook) -> Decimal | None:
         if market.venue != "kalshi" or market.venue_meta.get("series_ticker") != self.series:
@@ -195,6 +198,10 @@ class KalshiHighTemperatureLamp(KalshiHighTemperature):
         self._now = now
         self._refresh = refresh
         self._dists = {}
+        station = getattr(lamp, "station", city.icao)
+        if station != city.icao:
+            # A forecast for the wrong station produces confident, wrong prices; refuse to start.
+            raise ValueError(f"{city.series} model needs LAMP station {city.icao}, got {station}")
 
     @classmethod
     def from_file(cls, path: str | Path, lamp: LampClient, iem: IemAsosClient, **kwargs) -> KalshiHighTemperatureLamp:
