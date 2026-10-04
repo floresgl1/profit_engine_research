@@ -197,3 +197,45 @@ doesn't beat these markets: the market already prices LAMP/NBM-level
 information and then some. An edge, if any, would need information or
 speed the crowd lacks, not a better treatment of the same forecasts.
 Per-city parameters are saved in research/params/ for live logging only.
+
+## Structural edges: event arbitrage and dead buckets (`structural_edges.py`)
+
+**Question.** Without any model, do these markets leave money on the table?
+(1) Does buying, or selling, YES on every bucket of an event ever cost less
+than it pays, after fees? (2) Once the readings so far rule a bucket out,
+is its YES still bid?
+
+**Method.** All seven cities, test period Aug 2025 to Oct 2026, hourly
+candle closes from the evening before through close. Markets close at the
+end of the local standard-time day, so there is no post-outcome trading
+window; test 2 checks buckets ruled out *during* the day, using the rounded
+max reading plus the station's smallest training undercount as a lower bound
+on the high. Hours where any bucket's close is crossed (bid > ask) are
+skipped as artifacts (15 hours, all Philadelphia).
+
+**Result** (`structural_edges.md`): **no usable edge in either.**
+
+1. **Event arbitrage.** Buying every bucket costs a median $1.07-1.09 per
+   $1 payout; selling every bucket raises a median $0.95-0.99 of bids against $1
+   owed. After fees, 97 of 72,834 event-hours (0.13%) were positive to buy
+   and 322 of 26,688 (1.2%) to sell, 25 and 39 of them by 2c or more. Summed
+   over fourteen months, one contract set per positive hour, that is $4.45
+   at top-of-book sizes we can't see, from quotes that may have lasted
+   seconds. Many hits are 00:00-06:00, when books are thin and candle closes
+   are least reliable.
+2. **Dead buckets.** A bucket the readings have ruled out is quoted bid 0 /
+   ask 1c, almost always within the hour: 17 bid quotes in 89,343
+   event-hours, worth $1.91 per contract in total. The bound never failed. The one real
+   case, Chicago 2025-08-12 (a 17:51 UTC reading of 87.8°F, the high settled at 88,
+   while the 86-87 bucket was bid up to 55c for three hours), depends on
+   Chicago's smallest undercount being 0; with NYC's -1 it would not count.
+   Nothing "certain" (a 'greater' bucket already exceeded) was ever offered
+   below $1.
+
+**What it means.** These markets are efficient structurally as well as on
+forecasts: the books are internally consistent and someone clears ruled-out
+buckets as soon as readings arrive. Hourly data can't rule out edges that
+last seconds, but those are a latency race, not research. Next candidates
+are different markets (thinner crowds), not these.
+
+Rerun (cached in `data/structural/`): `uv run python research/structural_edges.py`
