@@ -7,6 +7,7 @@ Endpoints (docs.kalshi.com, checked 2026-10-03):
   GET /events/{ticker}               series_ticker for an event
   GET /events/fee_changes            per-event fee overrides
   GET /historical/markets/{ticker}   markets archived past the historical cutoff
+  GET /markets/trades?ticker=&min_ts= public trade prints (for the paper market maker)
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from profit_engine.core import (
     parse_utc,
     utc_now,
 )
+from profit_engine.maker.queue import PublicTrade
 from profit_engine.venues.http import ReadOnlyHttp, VenueHttpError
 
 log = logging.getLogger(__name__)
@@ -99,6 +101,26 @@ def parse_book(ticker: str, raw: dict[str, Any], received_at: datetime) -> Order
     bids = tuple(Level(p, s) for p, s in sorted(yes, key=lambda lvl: -lvl[0]) if s != 0)
     asks = tuple(Level(_ONE - p, s) for p, s in sorted(no, key=lambda lvl: -lvl[0]) if s != 0)
     return OrderBook(VENUE, ticker, bids, asks, received_at)
+
+
+def parse_trade(raw: dict[str, Any]) -> PublicTrade | None:
+    """A public trade print; None for block trades or anything malformed."""
+    if raw.get("is_block_trade"):
+        return None
+    side = raw.get("taker_outcome_side") or raw.get("taker_side")
+    try:
+        if side not in ("yes", "no"):
+            raise ValueError(f"taker side {side!r}")
+        return PublicTrade(
+            trade_id=str(raw["trade_id"]),
+            at=parse_utc(raw["created_time"]),
+            yes_price=Decimal(raw["yes_price_dollars"]),
+            count=Decimal(raw["count_fp"]),
+            taker_yes=side == "yes",
+        )
+    except (KeyError, ValueError, ArithmeticError) as exc:
+        log.warning("skipping malformed Kalshi trade %s: %s", raw.get("trade_id"), exc)
+        return None
 
 
 def parse_resolution(raw: dict[str, Any]) -> Resolution | None:
@@ -190,12 +212,18 @@ class KalshiSource:
                 log.warning("Kalshi market %s not found in live or historical data", ticker)
         return found
 
-    def _paginate(self, path: str, params: dict[str, Any]) -> Iterator[dict[str, Any]]:
+    def fetch_trades(self, ticker: str, since: datetime) -> list[PublicTrade]:
+        """Public non-block trades in `ticker` at or after `since` (whole seconds), oldest first."""
+        params = {"ticker": ticker, "min_ts": int(since.timestamp()), "limit": 1000}
+        trades = [t for raw in self._paginate("/markets/trades", params, key="trades") if (t := parse_trade(raw))]
+        return sorted(trades, key=lambda t: t.at)
+
+    def _paginate(self, path: str, params: dict[str, Any], key: str = "markets") -> Iterator[dict[str, Any]]:
         cursor = ""
         while True:
             page_params = dict(params, cursor=cursor) if cursor else params
             data = self.http.get_json(path, page_params)
-            yield from data.get("markets", [])
+            yield from data.get(key, [])
             cursor = data.get("cursor") or ""
             if not cursor:
                 return

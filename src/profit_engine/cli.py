@@ -116,6 +116,51 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_make(args: argparse.Namespace) -> int:
+    from profit_engine.maker.quoter import QuoterConfig
+    from profit_engine.maker.runner import MakerRunner, RunnerConfig
+
+    series = [s.strip() for s in (args.kalshi_series or "").split(",") if s.strip()]
+    if not series:
+        print("pass --kalshi-series", file=sys.stderr)
+        return 2
+    Path(args.db).parent.mkdir(parents=True, exist_ok=True)
+    store = Store(args.db)
+    runner = MakerRunner(
+        KalshiSource(ReadOnlyHttp(KALSHI_URL), series),
+        store,
+        QuoterConfig(size=Decimal(args.size), max_position=Decimal(args.max_position), maker_fee_rate=Decimal(args.maker_fee)),
+        RunnerConfig(strategy=args.strategy, interval=timedelta(seconds=args.interval)),
+    )
+    logging.info("paper market maker %s on %s (no orders are ever placed)", args.strategy, ",".join(series))
+    try:
+        runner.run_forever(cycles=args.cycles)
+    except KeyboardInterrupt:
+        logging.info("stopped")
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_maker_report(args: argparse.Namespace) -> int:
+    from profit_engine.maker.runner import results, summary
+
+    store = Store(args.db)
+    try:
+        resolutions = {r.market_id: r.yes_value for r in store.resolutions() if r.venue == "kalshi"}
+        by_strategy: dict[str, list] = {}
+        for strategy, _, fill in store.maker_fills():
+            by_strategy.setdefault(strategy, []).append(fill)
+        if not by_strategy:
+            print("No paper market-maker fills yet.")
+        for strategy, fills in sorted(by_strategy.items()):
+            print(f"[{strategy}]")
+            print(summary(results(fills, resolutions)))
+    finally:
+        store.close()
+    return 0
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     store = Store(args.db)
     try:
@@ -183,6 +228,19 @@ def parser() -> argparse.ArgumentParser:
     score.add_argument("--buckets", type=int, default=10)
     score.add_argument("--series", help="only score these comma-separated Kalshi series, e.g. KXHIGHCHI or KXHIGHNY,KXHIGHPHIL")
     score.set_defaults(func=cmd_score)
+
+    make = sub.add_parser("make", help="paper market maker: pretend quotes at the touch, filled from public trades")
+    make.add_argument("--kalshi-series", help="comma-separated Kalshi series, e.g. KXHIGHNY")
+    make.add_argument("--interval", type=float, default=10, help="seconds between polls (default 10)")
+    make.add_argument("--cycles", type=int, default=None, help="stop after N ticks (default: run until Ctrl-C)")
+    make.add_argument("--size", default="10", help="contracts per quote (default 10)")
+    make.add_argument("--max-position", default="50", help="max |position| per market (default 50)")
+    make.add_argument("--maker-fee", default="0.0175", help="maker fee rate x P x (1-P) (default 0.0175, conservative)")
+    make.add_argument("--strategy", default="join_touch_v1", help="name stored with the fills")
+    make.set_defaults(func=cmd_make)
+
+    mrep = sub.add_parser("maker-report", help="paper market-maker results")
+    mrep.set_defaults(func=cmd_maker_report)
 
     status = sub.add_parser("status", help="what is in the database")
     status.add_argument("--cash", default="1000", help="starting paper cash used when trading")
