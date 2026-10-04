@@ -6,7 +6,7 @@
 > the "price" is mostly the midpoint of a 1c/99c book. The apparent YES bias in
 > Yes/No markets (+4.5c per contract buying NO, both halves, most categories) is
 > most likely that placeholder price meeting the fact that most "Will X happen?"
-> questions resolve NO. Write-up in research/README.md.
+> questions resolve NO. Kalshi's real quotes show no such bias. Write-up in research/README.md.
 
 Closed binary markets, end date 2025-01-01 to 2026-10-01, volume >= 1000 USDC: 976455 listed, 16988 sampled (one per event, up to 5 per category per day), 16090 with a price 24 h after creation. Dropped: {'no price': 898}.
 Discovery and holdout: disjoint halves of events by id hash (8047 / 8043 markets).
