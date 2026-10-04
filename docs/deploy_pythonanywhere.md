@@ -32,11 +32,11 @@ Smoke test (3 cycles, then exits):
 Tasks page -> Always-on tasks -> command:
 
 ```
-cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/research.db ingest --kalshi-series KXHIGHNY --temperature-params research/temperature_params.json --temperature-params research/temperature_params_lamp.json --interval 60
+cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/research.db ingest --kalshi-series KXHIGHNY --temperature-params research/temperature_params.json --temperature-params research/temperature_params_lamp_v3.json --interval 60
 ```
 
 This logs three models side by side: `midpoint` (the market), `kxhigh_nbm`
-(v1) and `kxhigh_lamp` (v2). No `--paper-trade`: none has an edge yet
+(v1) and `kxhigh_lamp_v3` (v3, which supersedes v2). No `--paper-trade`: none has an edge yet
 (research/README.md); `profit-engine score` compares them on live data.
 
 ## Watching it

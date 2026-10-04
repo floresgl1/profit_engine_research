@@ -165,3 +165,5 @@ and to store.
 | Fit | Grid-search maximum likelihood of bias and sigma per lead | Moment estimates | The max of two parts has no simple residual to take moments of. |
 | Midnight abstain | Exact disputed hours (00:00-01:00 local at both ends) vs the expected high | +/- 2 h window | The wider window wrongly included 01:00, a normal hour (caught by a test). |
 | Trading | Not traded; logged next to v1 and the market | Trade | Backtest skill still negative at every lead. |
+| Nowcast correction (v3) | Shift LAMP's remaining max by alpha * (latest reading - LAMP's forecast for that hour), alpha fitted per lead | Ignore current error | Held-out skill improved at every same-day lead (all: -0.20 to -0.16); alpha = 0.5 at every lead. |
+| Live models | Log midpoint, v1 (`kxhigh_nbm`) and v3 (`kxhigh_lamp_v3`); v2 retired from the live command | Log everything | v3 contains v2 (alpha = 0) and beat it on held-out data. |

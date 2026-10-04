@@ -192,3 +192,26 @@ class TestLampModel:
         path.write_text(json.dumps({"model": "nbm", "leads": {}, "lead_times": {}}))
         with pytest.raises(ValueError):
             KalshiHighTemperatureLamp.from_file(path, FakeLamp({}), FakeIem([]))
+
+
+def test_v3_params_get_their_own_name(tmp_path):
+    temps = lamp_temps(afternoon=60.0)
+    obs = [Observation(utc(2026, 9, 28, 17, 51), D(64))]
+    leads = {name: RemainingMaxModel(bias=0.0, sigma=1.0, alpha=0.5) for name in PARAMS.lead_times}
+    path = tmp_path / "v3.json"
+    path.write_text(json.dumps({"model": "lamp", "version": 3, "leads": {k: v.to_dict() for k, v in leads.items()},
+                                "lead_times": {k: list(v) for k, v in PARAMS.lead_times.items()}}))
+    assert KalshiHighTemperatureLamp.from_file(path, FakeLamp(temps), FakeIem(obs)).name == "kxhigh_lamp_v3"
+
+
+def test_current_error_shifts_mean_by_alpha():
+    temps = lamp_temps(afternoon=60.0)
+    obs = [Observation(utc(2026, 9, 28, 17, 51), D(64))]
+    now = utc(2026, 9, 28, 18, 5)
+    zero = {n: RemainingMaxModel(bias=0.0, sigma=1.0, alpha=0.0) for n in PARAMS.lead_times}
+    half = {n: RemainingMaxModel(bias=0.0, sigma=1.0, alpha=0.5) for n in PARAMS.lead_times}
+    # remaining LAMP max after 18:05Z is 60 (afternoon hour 19Z); error now = 64 - 60 (18Z) = 4
+    d0 = KalshiHighTemperatureLamp(zero, PARAMS.lead_times, FakeLamp(temps), FakeIem(obs), now=lambda: now)._build(DAY, now)
+    d5 = KalshiHighTemperatureLamp(half, PARAMS.lead_times, FakeLamp(temps), FakeIem(obs), now=lambda: now)._build(DAY, now)
+    # forecast part centred at 60 vs 62; both maxed with the observed part (64 + undercount)
+    assert d5.mean() > d0.mean()
