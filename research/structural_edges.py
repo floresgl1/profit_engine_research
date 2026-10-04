@@ -12,7 +12,8 @@
    whose floor is below the bound can't lose.
 
 Prices are hourly candle closes (best bid/ask at the close of each hour,
-size unknown), so a hit here is a lead to confirm on live order books, not a
+size unknown); hours where any bucket's close is crossed (bid > ask, which a
+real book can't show) are skipped. So a hit here is a lead to confirm on live order books, not a
 tradeable amount. All buckets of an event are compared at the same candle
 close. Markets close at the end of the local standard-time day (01:00 local
 in daylight time), so every hour checked is a tradeable hour.
@@ -227,6 +228,9 @@ def analyse(series: str, data: dict) -> tuple[list[EventHour], list[DeadQuote], 
         todays = obs[bisect.bisect_left(times_obs, start) : bisect.bisect_right(times_obs, end)]
         for at in times:
             qs = [by_ticker[b.ticker][at] for b in buckets]
+            if any(q.bid > q.ask for q in qs):
+                skipped["crossed quote (event-hours)"] += 1  # candle bid/ask closes from different moments
+                continue
             hour = at.astimezone(city.zone).hour
             hours.append(EventHour(
                 series, event.event_ticker, at, hour,
