@@ -3,8 +3,8 @@
 For every public trade, the maker was on the other side of the taker. If we
 had been that maker, what would we have earned per contract?
 
-- entry edge: how far inside the hourly midpoint just before the trade the
-  maker was filled (the half-spread actually captured);
+- entry edge: how far inside the hourly midpoint the maker was filled (the
+  half-spread actually captured), only for trades within FRESH of that mid;
 - 1 h markout: maker PnL marked to the first hourly midpoint at least an hour
   after the trade (mid, not next trade, so bid/ask bounce can't flatter it);
 - settlement: maker PnL holding to the outcome.
@@ -36,7 +36,7 @@ import pickle
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -50,6 +50,7 @@ from profit_engine.weather.stations import CITIES  # noqa: E402
 N_EVENTS = 40
 HISTORICAL_CUTOFF = date(2026, 8, 4)
 MAKER_FEE = Decimal("0.0175")
+FRESH = timedelta(minutes=10)  # entry edge only when the reference mid is this recent
 CACHE = "data/markout"
 
 
@@ -110,14 +111,19 @@ def maker_fee(price: Decimal) -> Decimal:
     return MAKER_FEE * price * (1 - price)
 
 
-def mid_at_or_before(mids: list[Quote], at: datetime) -> Decimal | None:
+def mid_at_or_before(mids: list[Quote], at: datetime, max_age: timedelta = FRESH) -> Decimal | None:
+    """Last two-sided hourly mid at or before `at`, if it is at most `max_age` old.
+
+    Hourly mids go stale fast: a trade at 1c just after a bucket died, compared
+    with the 12c mid from the top of the hour, looks like a terrible fill.
+    """
     best = None
     for q in mids:
         if q.at > at:
             break
         if q.midpoint is not None:
-            best = q.midpoint
-    return best
+            best = q
+    return best.midpoint if best is not None and at - best.at <= max_age else None
 
 
 def mid_after(mids: list[Quote], at: datetime) -> Decimal | None:
@@ -154,8 +160,6 @@ class Fill:
 
 
 def fills_for(series: str, event, trades: dict[str, list[Trade]], mids: dict[str, list[Quote]]) -> list[Fill]:
-    from datetime import timedelta
-
     zone = CITIES[series].zone
     out = []
     for b in event.buckets:
@@ -275,7 +279,7 @@ def report(fills: list[Fill], n_events: int) -> str:
     out = ["# Market-maker markouts, Kalshi daily-high markets", ""]
     out.append(f"{n_events} events ({N_EVENTS} per city, evenly spaced {TEST_START} to {TEST_END}), {len(fills):,} non-block "
                f"trades. Maker PnL per contract in cents, volume-weighted, ± SE clustered by event. Entry edge = vs the "
-               f"hourly mid before the trade; 1 h markout = vs the first hourly mid an hour or more later; settlement = "
+               f"hourly mid, only for trades within {FRESH.seconds // 60} min after it; 1 h markout = vs the first hourly mid an hour or more later; settlement = "
                f"held to the outcome; last column subtracts a maker fee of {MAKER_FEE} x P x (1-P).")  # fmt: skip
     out.append("")
     out += table(fills, lambda f: "All", "All trades")
