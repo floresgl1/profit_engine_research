@@ -291,3 +291,38 @@ as the learning project it already is.
 
 Rerun (cached in `data/screen/`, `data/polymarket_screen/`):
 `uv run python research/calibration_screen.py` and `uv run python research/polymarket_screen.py`
+
+## Market-maker markouts (`markout.py`)
+
+**Question.** Every taker strategy lost the spread plus fees. Does the other
+side, the maker who collects the spread, keep it after informed takers take
+their share?
+
+**Method.** 40 evenly spaced test-period events per daily-high city (280
+events), every public non-block trade (1.43 million trades, 51 million
+contracts). For each trade, take the maker's side: entry edge vs the hourly
+mid (only for trades within 10 minutes of it; staler mids made the first
+preview show a fake -3.8c), 1 h markout vs the first hourly mid an hour
+later, and PnL holding to settlement. Volume-weighted, SE clustered by
+event; also shown with a conservative maker fee of 0.0175 x P x (1-P), since
+the docs don't state what makers pay on these series.
+
+**Result** (`markout.md`): **makers keep a small positive amount.**
+
+| | Entry edge | 1 h markout | Settlement | With maker fee |
+|---|---|---|---|---|
+| All trades | +2.62c | +0.19c | +0.78 ± 0.28c | +0.64 ± 0.28c |
+| Same day 14-18 | +3.19c | -0.73c | +1.02c | +0.93c |
+| Price 20-50c | +3.16c | +0.22c | +0.73 ± 0.53c | +0.36 ± 0.53c |
+
+Makers capture about 2.6c at entry and informed takers take back about
+1.8c by settlement. Positive in six of seven cities (NYC +1.5c, LA +1.2c);
+Philadelphia -1.4 ± 3.0c is noise. The afternoon 1 h markout is the
+only negative one: the informed flow arrives when readings are coming in.
+
+**Reading it.** This is the average over fills that happened, i.e. over
+the makers who are already there. A new maker joins the back of the queue,
+and fills that reach the back of the queue are disproportionately the ones
+where the price is about to move against it, so +0.8c is an upper bound. The
+next test has to model our queue position and fills honestly on live data;
+public history can't.
