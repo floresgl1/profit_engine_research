@@ -104,6 +104,45 @@ the last hour; a strategy at its position limit in 3+ open markets; `data/`
 over 2 GB. Each repeats at most every 6 hours while it lasts and sends a
 "resolved" message when it clears (state in `~/.profit_engine_alerts.json`).
 
+## Current schedule (as deployed, 2026-10-05)
+
+The PythonAnywhere account (`floresgl907`, Developer plan) allows one
+always-on task and shares its daily CPU allowance with finance_bot.
+
+**Always-on task** (logger for all seven cities, paper market makers v1 and
+v2 on NYC, log file for the health check):
+
+```
+cd /home/floresgl907/profit_engine_research && .venv/bin/profit-engine --log-file data/engine.log --db data/research.db ingest --kalshi-series KXHIGHNY,KXHIGHCHI,KXHIGHAUS,KXHIGHMIA,KXHIGHLAX,KXHIGHDEN,KXHIGHPHIL --temperature-params research/temperature_params.json --temperature-params research/temperature_params_lamp_v3.json --temperature-params research/params/KXHIGHCHI.json --temperature-params research/params/KXHIGHAUS.json --temperature-params research/params/KXHIGHMIA.json --temperature-params research/params/KXHIGHLAX.json --temperature-params research/params/KXHIGHDEN.json --temperature-params research/params/KXHIGHPHIL.json --interval 60 --maker-series KXHIGHNY
+```
+
+**Scheduled tasks** (UTC), with finance_bot's around them for reference:
+
+| Frequency | Time | Task |
+|---|---|---|
+| Daily | 12:00 | finance_bot: `dispatch_workflow.py update_marke...` |
+| Daily | 12:30 | **profit engine: Discord daily summary** |
+| Daily | 13:00 | finance_bot: `pre_run_validation.py` |
+| Daily | 13:30 | finance_bot: `sentiment_collector.py` |
+| Daily | 14:00 | finance_bot: `generate_signals.py` |
+| Daily | 14:15 | finance_bot: `dispatch_workflow.py agent_pretrad...` |
+| Daily | 15:00 | finance_bot: `run_bot.py` |
+| Daily | 15:30 | finance_bot: `edge_monitor.py` |
+| Daily | 15:45 | finance_bot: `pipeline_check.py` |
+| Daily | 16:00 | finance_bot: `dispatch_workflow.py passive_alloc...` |
+| Hourly | :30 | **profit engine: Discord health check** |
+
+Profit engine commands:
+
+```
+cd /home/floresgl907/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --pair-from 2026-10-06
+cd /home/floresgl907/profit_engine_research && .venv/bin/python tools/discord_notify.py health
+```
+
+The webhook URL is in `~/.discord_webhook` (mode 600), not in the repo.
+After changing the always-on command, restart the task and check that
+`data/engine.log` appears; a `git pull` alone doesn't change a running task.
+
 ## Watching it
 
 - Task log (Tasks page -> log link): one line per cycle ending
