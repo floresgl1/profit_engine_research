@@ -226,7 +226,10 @@ def cmd_make(args: argparse.Namespace) -> int:
 
 
 def cmd_maker_report(args: argparse.Namespace) -> int:
-    from profit_engine.maker.runner import results, summary
+    from datetime import date
+
+    from profit_engine.core import midpoint
+    from profit_engine.maker.report import render
 
     store = Store(args.db)
     try:
@@ -234,11 +237,13 @@ def cmd_maker_report(args: argparse.Namespace) -> int:
         by_strategy: dict[str, list] = {}
         for strategy, _, fill in store.maker_fills():
             by_strategy.setdefault(strategy, []).append(fill)
-        if not by_strategy:
-            print("No paper market-maker fills yet.")
-        for strategy, fills in sorted(by_strategy.items()):
-            print(f"[{strategy}]")
-            print(summary(results(fills, resolutions)))
+
+        def mark(ticker: str):
+            book = store.latest_book("kalshi", ticker)
+            return midpoint(book) if book else None
+
+        pair_from = date.fromisoformat(args.pair_from) if args.pair_from else None
+        print(render(by_strategy, resolutions, mark, store.maker_runs(), pair_from=pair_from))
     finally:
         store.close()
     return 0
@@ -325,7 +330,8 @@ def parser() -> argparse.ArgumentParser:
     make.add_argument("--model-margin", default="0.20", help="v2: no quote the model puts more than this against us (default 0.20)")
     make.set_defaults(func=cmd_make)
 
-    mrep = sub.add_parser("maker-report", help="paper market-maker results")
+    mrep = sub.add_parser("maker-report", help="paper market-maker results by event day, with intervals and v2 - v1")
+    mrep.add_argument("--pair-from", help="first event day (YYYY-MM-DD) for the paired comparison (default: when both ran)")
     mrep.set_defaults(func=cmd_maker_report)
 
     status = sub.add_parser("status", help="what is in the database")

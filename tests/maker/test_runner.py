@@ -6,7 +6,7 @@ from factories import make_market
 from profit_engine.core import Level, OrderBook, Resolution
 from profit_engine.maker.queue import PublicTrade
 from profit_engine.maker.quoter import MakerFill, QuoterConfig
-from profit_engine.maker.runner import MakerRunner, RunnerConfig, Strategy, results, summary
+from profit_engine.maker.runner import MakerRunner, RunnerConfig, Strategy
 from profit_engine.storage import Store
 from profit_engine.venues.kalshi.adapter import parse_trade
 
@@ -50,9 +50,10 @@ class FakeSource:
         return {m.market_id: self.resolved[m.market_id] for m in markets if m.market_id in self.resolved}
 
 
-def runner(source, store, clock, strategies=None, fair=None):
+def runner(source, store, clock, strategies=None, fair=None, record=True):
     strategies = strategies or [Strategy("v1", QuoterConfig(maker_fee_rate=D(0)))]
-    return MakerRunner(source, store, strategies, RunnerConfig(market_refresh=timedelta(seconds=30)), now=clock, fair=fair)
+    config = RunnerConfig(market_refresh=timedelta(seconds=30), record=record)
+    return MakerRunner(source, store, strategies, config, now=clock, fair=fair)
 
 
 def test_fills_once_per_trade_and_survive_restart(tmp_path):
@@ -84,15 +85,6 @@ def test_closed_market_stops_quoting_and_records_resolution(tmp_path):
     assert store.resolution("kalshi", "M").yes_value == D(1)
 
 
-def test_results_hand_computed():
-    fills = [MakerFill("M", "bid", D("0.40"), D(10), D("0.01"), T0), MakerFill("M", "ask", D("0.44"), D(4), D("0.01"), T0)]
-    (row,) = results(fills, {"M": D(0)})
-    # cash -4.00 - 0.01 + 1.76 - 0.01 = -2.26; position 6; settles at 0 -> pnl -2.26
-    assert (row.cash, row.position, row.pnl, row.contracts) == (D("-2.26"), D(6), D("-2.26"), D(14))
-    assert "per contract: -16.14c" in summary([row])
-    assert results(fills, {})[0].pnl is None
-
-
 def test_parse_trade():
     raw = {"trade_id": "x", "created_time": "2026-10-05T15:00:01Z", "yes_price_dollars": "0.4400", "count_fp": "3.00",
            "taker_outcome_side": "no", "is_block_trade": False}
@@ -115,7 +107,7 @@ def test_no_trade_requests_while_not_quoting(tmp_path):
     store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
     src.fetch_books = lambda markets: {m.market_id: OrderBook("kalshi", m.market_id, (Level(D("0.40"), D(5)),), (), T0)
                                        for m in markets}  # one-sided: no quotes
-    r = runner(src, store, clock)
+    r = runner(src, store, clock, record=False)
     for s in (0, 10, 20):
         clock.t = at(s)
         r.tick()
@@ -155,3 +147,34 @@ def test_strategy_names_must_be_distinct(tmp_path):
     s = Strategy("same", QuoterConfig())
     with pytest.raises(ValueError):
         MakerRunner(FakeSource(), Store(tmp_path / "m.db"), [s, s])
+
+
+def test_records_books_trades_fair_and_runs_for_replay(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    v2 = Strategy("v2", QuoterConfig(maker_fee_rate=D(0), model_margin=D("0.20")))
+    r = runner(src, store, clock, [v2], fair=lambda market, book: D("0.42"))
+    r.tick()
+    src.trades = [PublicTrade("a", at(5), D("0.44"), D(2), True), PublicTrade("b", at(6), D("0.40"), D(1), False)]
+    clock.t = at(10)
+    r.tick()
+    clock.t = at(20)
+    r.tick()  # overlap re-read: trades stored once
+    assert [t.trade_id for t in store.maker_trades("M")] == ["a", "b"]
+    assert store.maker_trades("M")[0] == src.trades[0]
+    assert len(list(store.books("kalshi", "M"))) == 1  # same book every tick: stored once
+    assert [f for _, f in store.maker_fair("M")] == [D("0.42")]  # same model price: stored once
+    assert store.maker_ticks() == [at(0), at(10), at(20)]
+    assert store.maker_runs() == {"v2": T0}
+    assert store.market("kalshi", "M") is not None
+
+
+def test_recording_reads_trades_even_when_not_quoting(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    src.fetch_books = lambda markets: {m.market_id: OrderBook("kalshi", m.market_id, (Level(D("0.40"), D(5)),), (), T0)
+                                       for m in markets}
+    src.trades = [PublicTrade("a", at(5), D("0.40"), D(2), False)]
+    r = runner(src, store, clock)
+    r.tick()
+    clock.t = at(10)
+    r.tick()
+    assert r.makers["v1"]["M"].quotes == {} and [t.trade_id for t in store.maker_trades("M")] == ["a"]
