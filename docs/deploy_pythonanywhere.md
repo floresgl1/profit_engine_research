@@ -76,6 +76,34 @@ trade, books and model prices when they change) so other strategies can be
 replayed on the same data. Expect roughly 10 MB a day; check disk use on the
 Files page now and then (`du -sh data/`).
 
+## Discord notifications (scheduled tasks)
+
+`tools/discord_notify.py` sends a daily summary and problem-only alerts to a
+Discord channel. It lives outside the engine package because posting is an
+HTTP write and the engine must stay GET-only; it only reads `data/` and only
+posts to the webhook.
+
+1. In Discord: Server Settings -> Integrations -> Webhooks -> New Webhook,
+   pick the channel, Copy Webhook URL. Treat the URL like a password.
+2. On PythonAnywhere (Bash console), store it outside the repository:
+   ```
+   echo 'PASTE_THE_URL_HERE' > ~/.discord_webhook && chmod 600 ~/.discord_webhook
+   ```
+3. Make the engine also write its log to a file the health check can read:
+   add `--log-file data/engine.log` right after `.venv/bin/profit-engine` in
+   the always-on task's command (it is a global option, before `--db`), and
+   restart the task.
+4. Test: `cd ~/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --dry-run`
+   prints the message; without `--dry-run` it posts.
+5. Tasks page -> Scheduled tasks (times are UTC):
+   - daily at 12:30: `cd /home/YOURUSER/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --pair-from 2026-10-06`
+   - hourly: `cd /home/YOURUSER/profit_engine_research && .venv/bin/python tools/discord_notify.py health`
+
+Health alerts: maker's last tick over 15 minutes old; 5+ ERROR log lines in
+the last hour; a strategy at its position limit in 3+ open markets; `data/`
+over 2 GB. Each repeats at most every 6 hours while it lasts and sends a
+"resolved" message when it clears (state in `~/.profit_engine_alerts.json`).
+
 ## Watching it
 
 - Task log (Tasks page -> log link): one line per cycle ending
