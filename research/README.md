@@ -326,3 +326,37 @@ and fills that reach the back of the queue are disproportionately the ones
 where the price is about to move against it, so +0.8c is an upper bound. The
 next test has to model our queue position and fills honestly on live data;
 public history can't.
+
+## Should the maker step back when the model disagrees? (`maker_rules.py`)
+
+**Question.** The markout showed makers keep about +0.8c per contract. Can
+the v3 temperature model pick out the fills that lose, so a maker can avoid
+quoting them?
+
+**Method.** The markout trades in the two hours after each model decision
+time (16:00 the day before; 10:00, 12:00, 14:00 on the day): 628,567 maker
+fills, 280 events, all seven cities. For each, the model's probability for
+the bucket at that time (training-period parameters, data available then).
+Model edge = maker side x (model probability - trade price). Candidate
+rule: skip fills with model edge below -m; m chosen on the discovery half of
+events by total maker PnL, checked on the holdout half.
+
+**Result** (`maker_rules.md`): **the model separates good fills from bad.**
+
+| Model edge | Maker PnL per contract |
+|---|---|
+| below -10c (model says we were picked off) | -0.81c |
+| -2 to +2c | +0.83c |
+| above +10c (model agrees with our fill) | +3.82c |
+
+| Rule | Discovery: total / per contract | Holdout: total / per contract |
+|---|---|---|
+| v1, quote always | 105,867 / +0.87c | 116,841 / +1.05c |
+| skip below -20c (chosen) | 128,753 / +1.26c | 150,319 / +1.80c |
+
+Holdout total maker PnL +29% with the rule, and it helps at every decision
+time. This is the v2 quote veto: no bid above model + 20c, no ask below
+model - 20c, applied only in the window tested (16:00 the day before to
+16:00 on the day); otherwise, and whenever the model abstains, v2 quotes
+like v1. Same caveat as the markout: these are other makers' fills, so the
+live paper test decides.

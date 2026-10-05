@@ -1,4 +1,4 @@
-"""v1 quoting policy: join the best bid and best ask, nothing smarter.
+"""Quoting policies: join the best bid and best ask (v1), optionally vetoed by a model (v2).
 
 Per market, each tick:
 1. match the resting quotes against the trades since the last tick;
@@ -10,7 +10,12 @@ Per market, each tick:
 Limits: a fixed quote size, and no new quote on the side that would push
 the position past max_position (long or short).
 
-No model in v1; it's the baseline a model-informed quoter must beat.
+v2 adds one rule: with a model probability `fair` and margin m, don't
+quote a side whose fill the model puts at more than m against us (no bid
+above fair + m, no ask below fair - m). research/maker_rules.md chose
+m = 20c on the discovery half of 628k historical maker fills; on the holdout
+it raised total maker PnL by 29%. Without a model price (the model abstains,
+or no model), v2 quotes like v1.
 """
 
 from __future__ import annotations
@@ -32,10 +37,13 @@ class QuoterConfig:
     size: Decimal = Decimal(10)
     max_position: Decimal = Decimal(50)
     maker_fee_rate: Decimal = DEFAULT_MAKER_FEE_RATE
+    model_margin: Decimal | None = None  # v2: veto quotes the model puts more than this against us
 
     def __post_init__(self) -> None:
         if self.size <= 0 or self.max_position < self.size:
             raise ValueError("need size > 0 and max_position >= size")
+        if self.model_margin is not None and self.model_margin < 0:
+            raise ValueError("model_margin must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -74,9 +82,11 @@ class MarketMaker:
     cash: Decimal = Decimal(0)
     quotes: dict[str, RestingQuote] = field(default_factory=dict)
 
-    def step(self, book: OrderBook, trades: list[PublicTrade], now: datetime) -> list[MakerFill]:
+    def step(
+        self, book: OrderBook, trades: list[PublicTrade], now: datetime, fair: Decimal | None = None
+    ) -> list[MakerFill]:
         fills = self._match(trades, now)
-        self._requote(book, now)
+        self._requote(book, now, fair)
         return fills
 
     def stop(self) -> None:
@@ -100,7 +110,13 @@ class MarketMaker:
                 del self.quotes[side]
         return fills
 
-    def _requote(self, book: OrderBook, now: datetime) -> None:
+    def _vetoed(self, side: str, price: Decimal, fair: Decimal | None) -> bool:
+        m = self.config.model_margin
+        if m is None or fair is None:
+            return False
+        return price > fair + m if side == "bid" else price < fair - m
+
+    def _requote(self, book: OrderBook, now: datetime, fair: Decimal | None = None) -> None:
         best = {"bid": book.best_bid, "ask": book.best_ask}
         if best["bid"] is None or best["ask"] is None:
             self.stop()  # one-sided book: no honest place to join
@@ -110,7 +126,7 @@ class MarketMaker:
             size = min(self.config.size, room)
             target = best[side].price
             current = self.quotes.get(side)
-            if size <= 0:
+            if size <= 0 or self._vetoed(side, target, fair):
                 self.quotes.pop(side, None)
             elif current is not None and current.price == target:
                 self.quotes[side] = refresh_queue(current, visible_size(book, side, target))

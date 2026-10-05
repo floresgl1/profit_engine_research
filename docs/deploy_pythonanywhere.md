@@ -62,7 +62,7 @@ cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/re
 ```
 
 (Add `--maker-series KXHIGHNY` the same way to the all-cities command if you
-run that one.) The log gets a `maker tick N` line every 30 ticks (5 minutes).
+run that one.) It runs two strategies on the same data: `join_touch_v1` (quote at the best bid and ask) and `model_veto_v2` (the same, minus quotes the temperature model puts more than 20c against us; see research/maker_rules.md). The log gets a `maker tick N` line every 30 ticks (5 minutes) with both.
 The ingest line's `cpu Ns total` is now for the whole process, maker
 included; the maker added about 0.02-0.05 s per 10 s tick in testing.
 Results: `.venv/bin/profit-engine --db data/maker.db maker-report`.

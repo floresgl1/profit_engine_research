@@ -123,21 +123,79 @@ def cmd_ingest(args: argparse.Namespace) -> int:
     return 0
 
 
+MODEL_PARAMS = {"KXHIGHNY": "research/temperature_params_lamp_v3.json"}  # other cities: research/params/<series>.json
+
+
+def maker_fair_price(series: list[str]):
+    """The v3 temperature model's probability for a market, for the v2 quote veto.
+
+    One model per series with fitted parameters, each with its own LAMP and
+    IEM clients for the city's station. None (so v2 quotes like v1) when the
+    model abstains, and outside the window research/maker_rules.md tested
+    the veto in: 16:00 local the day before to 16:00 local on the day.
+    """
+    from datetime import datetime, time
+
+    from profit_engine.core import utc_now
+    from profit_engine.models.kalshi_temperature import KalshiHighTemperatureLamp
+    from profit_engine.weather.kalshi_temps import event_day
+    from profit_engine.weather import iem, lamp
+    from profit_engine.weather.stations import CITIES
+
+    models = []
+    for name in series:
+        path = Path(MODEL_PARAMS.get(name, f"research/params/{name}.json"))
+        if name not in CITIES or not path.exists():
+            logging.warning("no temperature model for %s: model_veto_v2 quotes like v1 there", name)
+            continue
+        lamp_client = lamp.LampClient(ReadOnlyHttp(lamp.BASE_URL, timeout=60), station=CITIES[name].icao)
+        iem_client = IemAsosClient(ReadOnlyHttp(iem.BASE_URL, timeout=60))
+        models.append(KalshiHighTemperatureLamp.from_file(path, lamp_client, iem_client, city=CITIES[name]))
+
+    def fair(market, book):
+        city = CITIES.get(market.venue_meta.get("series_ticker", ""))
+        event = market.venue_meta.get("event_ticker", "")
+        if city is None or not event:
+            return None
+        day = event_day(event)
+        opens = datetime.combine(day - timedelta(days=1), time(16), tzinfo=city.zone)
+        closes = datetime.combine(day, time(16), tzinfo=city.zone)
+        if not opens <= utc_now() < closes:
+            return None
+        for model in models:
+            p = model.predict(market, book)
+            if p is not None:
+                return p
+        return None
+
+    return fair
+
+
 def run_maker(db: str, series: list[str], interval: float, cycles: int | None = None, size: str = "10",
-              max_position: str = "50", maker_fee: str = "0.0175", strategy: str = "join_touch_v1") -> None:
-    """Run the paper market maker until `cycles` ticks or Ctrl-C. Opens its own database connection."""
+              max_position: str = "50", maker_fee: str = "0.0175", model_margin: str = "0.20") -> None:
+    """Run the paper market makers (v1 join-the-touch, v2 with the model veto) until `cycles` ticks or Ctrl-C.
+
+    Both strategies see the same books and trades every tick. Opens its own
+    database connection.
+    """
     from profit_engine.maker.quoter import QuoterConfig
-    from profit_engine.maker.runner import MakerRunner, RunnerConfig
+    from profit_engine.maker.runner import MakerRunner, RunnerConfig, Strategy
 
     Path(db).parent.mkdir(parents=True, exist_ok=True)
     store = Store(db)
+    base = QuoterConfig(size=Decimal(size), max_position=Decimal(max_position), maker_fee_rate=Decimal(maker_fee))
+    strategies = [
+        Strategy("join_touch_v1", base),
+        Strategy("model_veto_v2", QuoterConfig(base.size, base.max_position, base.maker_fee_rate, Decimal(model_margin))),
+    ]
     runner = MakerRunner(
         KalshiSource(ReadOnlyHttp(KALSHI_URL), series),
         store,
-        QuoterConfig(size=Decimal(size), max_position=Decimal(max_position), maker_fee_rate=Decimal(maker_fee)),
-        RunnerConfig(strategy=strategy, interval=timedelta(seconds=interval)),
+        strategies,
+        RunnerConfig(interval=timedelta(seconds=interval)),
+        fair=maker_fair_price(series),
     )
-    logging.info("paper market maker %s on %s (no orders are ever placed)", strategy, ",".join(series))
+    logging.info("paper market makers %s on %s (no orders are ever placed)", [s.name for s in strategies], ",".join(series))
     try:
         runner.run_forever(cycles=cycles)
     finally:
@@ -161,7 +219,7 @@ def cmd_make(args: argparse.Namespace) -> int:
         print("pass --kalshi-series", file=sys.stderr)
         return 2
     try:
-        run_maker(args.db, series, args.interval, args.cycles, args.size, args.max_position, args.maker_fee, args.strategy)
+        run_maker(args.db, series, args.interval, args.cycles, args.size, args.max_position, args.maker_fee, args.model_margin)
     except KeyboardInterrupt:
         logging.info("stopped")
     return 0
@@ -257,14 +315,14 @@ def parser() -> argparse.ArgumentParser:
     score.add_argument("--series", help="only score these comma-separated Kalshi series, e.g. KXHIGHCHI or KXHIGHNY,KXHIGHPHIL")
     score.set_defaults(func=cmd_score)
 
-    make = sub.add_parser("make", help="paper market maker: pretend quotes at the touch, filled from public trades")
+    make = sub.add_parser("make", help="paper market makers v1 and v2: pretend quotes at the touch, filled from public trades")
     make.add_argument("--kalshi-series", help="comma-separated Kalshi series, e.g. KXHIGHNY")
     make.add_argument("--interval", type=float, default=10, help="seconds between polls (default 10)")
     make.add_argument("--cycles", type=int, default=None, help="stop after N ticks (default: run until Ctrl-C)")
     make.add_argument("--size", default="10", help="contracts per quote (default 10)")
     make.add_argument("--max-position", default="50", help="max |position| per market (default 50)")
     make.add_argument("--maker-fee", default="0.0175", help="maker fee rate x P x (1-P) (default 0.0175, conservative)")
-    make.add_argument("--strategy", default="join_touch_v1", help="name stored with the fills")
+    make.add_argument("--model-margin", default="0.20", help="v2: no quote the model puts more than this against us (default 0.20)")
     make.set_defaults(func=cmd_make)
 
     mrep = sub.add_parser("maker-report", help="paper market-maker results")
