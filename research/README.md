@@ -239,3 +239,90 @@ last seconds, but those are a latency race, not research. Next candidates
 are different markets (thinner crowds), not these.
 
 Rerun (cached in `data/structural/`): `uv run python research/structural_edges.py`
+
+## Calibration screens: all of Kalshi and Polymarket (`calibration_screen.py`, `polymarket_screen.py`)
+
+**Question.** Is any category or price range of either venue systematically
+mispriced, so that a blind rule (buy YES, or buy NO, in a price band) beats
+fees? That would be an edge without a model, and would say where to dig.
+
+**Method.** Settled/closed binary markets, Jan 2025 to Aug 2026 (Kalshi) and
+Jan 2025 to Oct 2026 (Polymarket). Kalshi: newest archive page of all 14,585
+series (557,015 markets), up to 3 per series with volume >= 500, best bid/ask
+24 h after open, spreads over 10c dropped: 8,329 scored. Polymarket: 976,455
+closed markets, one per event and at most 5 per category per day, CLOB price
+24 h after creation: 16,090 scored. Discovery and holdout are disjoint halves
+of events; errors clustered by series/category and decision date.
+
+**Two method errors, caught before any result was used.**
+1. *Look-ahead through the decision time.* The first version priced markets
+   24 h before *close*. Markets that resolve early mostly resolve YES
+   (Polymarket: 83% of first-outcome winners closed over a day early vs 61% of
+   losers), so the decision time leaked the outcome and YES looked underpriced
+   everywhere. Fixed by deciding 24 h after *open*, which can't depend on the
+   outcome.
+2. *Prices nobody offers.* An empty book's midpoint is about 50c. The Kalshi
+   screen drops spreads over 10c; Polymarket's history has no bid/ask, so it
+   can't.
+
+**Results.**
+
+- **Kalshi** (`calibration_screen.md`): **calibrated; no flags in either half.**
+  YES priced 10-65c won within 0.2c of its price (4,744 markets: mid - won
+  +0.002, discovery -0.002, holdout +0.006). Every blind rule loses about what
+  it pays: median spread 5-6c plus fee, so buying NO at the bid lost 3.8c per
+  contract. No category stood out.
+- **Polymarket** (`polymarket_screen.md`, flagged untradeable): Yes/No markets
+  look YES-overpriced, +4.5c per contract buying NO after fees, in both
+  halves and eight of eleven categories, while markets whose first outcome is
+  arbitrary (team vs team) are calibrated. But live day-old Yes/No books priced
+  10-65c have a **median spread of 94c**: the "price" is mostly the midpoint
+  of an empty book, and most "Will X happen?" questions resolve NO. Kalshi's
+  real quotes show no such bias. Treat it as an artifact of untradeable
+  prices, not an edge.
+
+**What it means.** Across every category on both venues, prices that can
+actually be traded are as good as the outcomes; the only "edges" found were
+in prices no one was offering. Together with the temperature and structural
+results, these markets are not beatable by public information or simple
+rules at the scale of this project. The remaining options are strategic, not
+another screen: provide liquidity instead of taking it, or treat the engine
+as the learning project it already is.
+
+Rerun (cached in `data/screen/`, `data/polymarket_screen/`):
+`uv run python research/calibration_screen.py` and `uv run python research/polymarket_screen.py`
+
+## Market-maker markouts (`markout.py`)
+
+**Question.** Every taker strategy lost the spread plus fees. Does the other
+side, the maker who collects the spread, keep it after informed takers take
+their share?
+
+**Method.** 40 evenly spaced test-period events per daily-high city (280
+events), every public non-block trade (1.43 million trades, 51 million
+contracts). For each trade, take the maker's side: entry edge vs the hourly
+mid (only for trades within 10 minutes of it; staler mids made the first
+preview show a fake -3.8c), 1 h markout vs the first hourly mid an hour
+later, and PnL holding to settlement. Volume-weighted, SE clustered by
+event; also shown with a conservative maker fee of 0.0175 x P x (1-P), since
+the docs don't state what makers pay on these series.
+
+**Result** (`markout.md`): **makers keep a small positive amount.**
+
+| | Entry edge | 1 h markout | Settlement | With maker fee |
+|---|---|---|---|---|
+| All trades | +2.62c | +0.19c | +0.78 ± 0.28c | +0.64 ± 0.28c |
+| Same day 14-18 | +3.19c | -0.73c | +1.02c | +0.93c |
+| Price 20-50c | +3.16c | +0.22c | +0.73 ± 0.53c | +0.36 ± 0.53c |
+
+Makers capture about 2.6c at entry and informed takers take back about
+1.8c by settlement. Positive in six of seven cities (NYC +1.5c, LA +1.2c);
+Philadelphia -1.4 ± 3.0c is noise. The afternoon 1 h markout is the
+only negative one: the informed flow arrives when readings are coming in.
+
+**Reading it.** This is the average over fills that happened, i.e. over
+the makers who are already there. A new maker joins the back of the queue,
+and fills that reach the back of the queue are disproportionately the ones
+where the price is about to move against it, so +0.8c is an upper bound. The
+next test has to model our queue position and fills honestly on live data;
+public history can't.

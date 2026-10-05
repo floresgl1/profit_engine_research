@@ -35,6 +35,7 @@ from profit_engine.core import (
     Side,
     require_utc,
 )
+from profit_engine.maker.quoter import MakerFill
 
 SCHEMA_VERSION = 1
 
@@ -119,6 +120,19 @@ CREATE TABLE IF NOT EXISTS paper_fills (
     book_received_at TEXT,
     reason TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS maker_fills (
+    id INTEGER PRIMARY KEY,
+    strategy TEXT NOT NULL,
+    venue TEXT NOT NULL,
+    market_id TEXT NOT NULL,
+    side TEXT NOT NULL,
+    price TEXT NOT NULL,
+    quantity TEXT NOT NULL,
+    fee TEXT NOT NULL,
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS maker_fills_strategy ON maker_fills (strategy, market_id);
 """
 
 
@@ -456,6 +470,28 @@ class Store:
                 )
             )
         return fills
+
+    # --- paper market maker -----------------------------------------------------
+
+    def add_maker_fill(self, strategy: str, venue: str, fill: MakerFill) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO maker_fills (strategy, venue, market_id, side, price, quantity, fee, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (strategy, venue, fill.market_id, fill.side, str(fill.price), str(fill.quantity), str(fill.fee), ts(fill.at)),
+            )
+
+    def maker_fills(self, strategy: str | None = None) -> list[tuple[str, str, MakerFill]]:
+        """(strategy, venue, fill) rows, oldest first."""
+        sql = "SELECT strategy, venue, market_id, side, price, quantity, fee, at FROM maker_fills"
+        args: list[str] = []
+        if strategy is not None:
+            sql += " WHERE strategy = ?"
+            args.append(strategy)
+        rows = self._conn.execute(sql + " ORDER BY at, id", args)
+        return [
+            (r[0], r[1], MakerFill(r[2], r[3], Decimal(r[4]), Decimal(r[5]), Decimal(r[6]), from_ts(r[7])))
+            for r in rows
+        ]
 
     def fill_rows(self) -> list[dict[str, str | None]]:
         cursor = self._conn.execute("SELECT * FROM paper_fills ORDER BY decided_at, id")
