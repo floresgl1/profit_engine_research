@@ -35,6 +35,7 @@ from profit_engine.core import (
     Side,
     require_utc,
 )
+from profit_engine.maker.queue import PublicTrade
 from profit_engine.maker.quoter import MakerFill
 
 SCHEMA_VERSION = 1
@@ -133,6 +134,35 @@ CREATE TABLE IF NOT EXISTS maker_fills (
     at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS maker_fills_strategy ON maker_fills (strategy, market_id);
+
+-- What the paper market maker saw, for replaying other strategies on the same data.
+-- (Its books go in book_snapshots / book_states like the logger's.)
+CREATE TABLE IF NOT EXISTS maker_trades (
+    trade_id TEXT PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    yes_price TEXT NOT NULL,
+    count TEXT NOT NULL,
+    taker_yes INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS maker_trades_market ON maker_trades (market_id, at);
+
+CREATE TABLE IF NOT EXISTS maker_fair (
+    id INTEGER PRIMARY KEY,
+    market_id TEXT NOT NULL,
+    at TEXT NOT NULL,
+    fair TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS maker_fair_market ON maker_fair (market_id, at);
+
+-- One row per maker tick; books and model prices are stored only when they change,
+-- so replay carries the last one forward to each tick.
+CREATE TABLE IF NOT EXISTS maker_ticks (at TEXT PRIMARY KEY);
+
+CREATE TABLE IF NOT EXISTS maker_runs (
+    strategy TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
 """
 
 
@@ -492,6 +522,43 @@ class Store:
             (r[0], r[1], MakerFill(r[2], r[3], Decimal(r[4]), Decimal(r[5]), Decimal(r[6]), from_ts(r[7])))
             for r in rows
         ]
+
+    def add_maker_trades(self, market_id: str, trades: Iterable[PublicTrade]) -> None:
+        rows = [(t.trade_id, market_id, ts(t.at), str(t.yes_price), str(t.count), int(t.taker_yes)) for t in trades]
+        if rows:
+            with self._conn:
+                self._conn.executemany("INSERT OR IGNORE INTO maker_trades VALUES (?, ?, ?, ?, ?, ?)", rows)
+
+    def maker_trades(self, market_id: str) -> list[PublicTrade]:
+        rows = self._conn.execute(
+            "SELECT trade_id, at, yes_price, count, taker_yes FROM maker_trades WHERE market_id = ? ORDER BY at, trade_id",
+            (market_id,),
+        )
+        return [PublicTrade(r[0], from_ts(r[1]), Decimal(r[2]), Decimal(r[3]), bool(r[4])) for r in rows]
+
+    def add_maker_fair(self, market_id: str, at: datetime, fair: Decimal) -> None:
+        with self._conn:
+            self._conn.execute("INSERT INTO maker_fair (market_id, at, fair) VALUES (?, ?, ?)", (market_id, ts(at), str(fair)))
+
+    def maker_fair(self, market_id: str) -> list[tuple[datetime, Decimal]]:
+        rows = self._conn.execute("SELECT at, fair FROM maker_fair WHERE market_id = ? ORDER BY at, id", (market_id,))
+        return [(from_ts(r[0]), Decimal(r[1])) for r in rows]
+
+    def add_maker_tick(self, at: datetime) -> None:
+        with self._conn:
+            self._conn.execute("INSERT OR IGNORE INTO maker_ticks VALUES (?)", (ts(at),))
+
+    def maker_ticks(self) -> list[datetime]:
+        return [from_ts(r[0]) for r in self._conn.execute("SELECT at FROM maker_ticks ORDER BY at")]
+
+    def add_maker_run(self, strategy: str, started_at: datetime) -> None:
+        with self._conn:
+            self._conn.execute("INSERT INTO maker_runs VALUES (?, ?)", (strategy, ts(started_at)))
+
+    def maker_runs(self) -> dict[str, datetime]:
+        """First start per strategy."""
+        rows = self._conn.execute("SELECT strategy, MIN(started_at) FROM maker_runs GROUP BY strategy")
+        return {r[0]: from_ts(r[1]) for r in rows}
 
     def fill_rows(self) -> list[dict[str, str | None]]:
         cursor = self._conn.execute("SELECT * FROM paper_fills ORDER BY decided_at, id")

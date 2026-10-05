@@ -12,6 +12,11 @@ Each tick (default every 10 s):
 - step every strategy's MarketMaker for the market on the same book and
   trades (so strategies are compared on identical data) and store fills.
 
+With `record` on (the default) it also stores what it sees, for offline
+replay of other strategies on the same data: every tick time, every trade,
+the markets, and each book and model price whenever it changes (replay
+carries the last one forward to each tick).
+
 A strategy with a model margin gets the model's probability for the market
 from `fair` (computed once per market per tick, only if some strategy needs
 it); None means no model price, and the strategy quotes like v1.
@@ -43,6 +48,9 @@ OVERLAP = timedelta(seconds=2)  # re-read this much before the last tick; ids de
 class RunnerConfig:
     interval: timedelta = timedelta(seconds=10)
     market_refresh: timedelta = timedelta(minutes=10)
+    # Store every book, trade and model price seen, so other strategies can be replayed
+    # on exactly this data. Costs a trades request per open market per tick.
+    record: bool = True
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,11 @@ class MakerRunner:
         self._fair = fair
         self._needs_fair = any(s.quoter.model_margin is not None for s in strategies)
         self.makers: dict[str, dict[str, MarketMaker]] = {s.name: {} for s in strategies}
+        self._last_book: dict[str, tuple] = {}  # last recorded (bids, asks) per market
+        self._last_fair: dict[str, Decimal] = {}
+        started = now()
+        for s in strategies:
+            store.add_maker_run(s.name, started)
         self.open: dict[str, Market] = {}
         self._since: dict[str, datetime] = {}
         self._seen: dict[str, dict[str, datetime]] = {}
@@ -100,6 +113,8 @@ class MakerRunner:
         if self._refreshed is None or now - self._refreshed >= self.config.market_refresh:
             self._refresh_markets(now)
         books = self.source.fetch_books(list(self.open.values())) if self.open else {}
+        if self.config.record:
+            self.store.add_maker_tick(now)
         fills: list[MakerFill] = []
         for ticker, market in self.open.items():
             makers = [(s, self._maker(s, ticker)) for s in self.strategies]
@@ -108,12 +123,20 @@ class MakerRunner:
                 for _, maker in makers:
                     maker.stop()
                 continue
-            if any(maker.quotes for _, maker in makers):
+            if self.config.record and self._last_book.get(ticker) != (book.bids, book.asks):
+                self.store.add_snapshot(book)
+                self._last_book[ticker] = (book.bids, book.asks)
+            if self.config.record or any(maker.quotes for _, maker in makers):
                 trades = self._new_trades(ticker, now)
+                if self.config.record:
+                    self.store.add_maker_trades(ticker, trades)
             else:  # nothing resting can fill: skip the request, start reading trades from now
                 self._since[ticker] = now
                 trades = []
             fair = self._fair_price(market, book)
+            if self.config.record and fair is not None and self._last_fair.get(ticker) != fair:
+                self.store.add_maker_fair(ticker, now, fair)
+                self._last_fair[ticker] = fair
             for strategy, maker in makers:
                 for fill in maker.step(book, trades, now, fair):
                     self.store.add_maker_fill(strategy.name, "kalshi", fill)
@@ -152,6 +175,9 @@ class MakerRunner:
             self._seen.pop(ticker, None)
         self.open = listed
         self._refreshed = now
+        if self.config.record:
+            for market in listed.values():
+                self.store.upsert_market(market, now)
         self._record_resolutions()
 
     def _record_resolutions(self) -> None:
@@ -188,50 +214,3 @@ class MakerRunner:
             sleep = self.config.interval.total_seconds() - (time.monotonic() - started)
             if sleep > 0 and (cycles is None or n < cycles):
                 time.sleep(sleep)
-
-
-# --- results -----------------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class MarketResult:
-    market_id: str
-    fills: int
-    contracts: Decimal
-    cash: Decimal
-    position: Decimal
-    settled_value: Decimal | None  # YES payout if resolved
-
-    @property
-    def pnl(self) -> Decimal | None:
-        if self.settled_value is None:
-            return None
-        return self.cash + self.position * self.settled_value
-
-
-def results(fills: list[MakerFill], resolutions: dict[str, Decimal]) -> list[MarketResult]:
-    by_market: dict[str, list[MakerFill]] = {}
-    for f in fills:
-        by_market.setdefault(f.market_id, []).append(f)
-    out = []
-    for ticker, fs in sorted(by_market.items()):
-        out.append(MarketResult(
-            ticker, len(fs), sum((f.quantity for f in fs), Decimal(0)),
-            sum((f.cash for f in fs), Decimal(0)), sum((f.position for f in fs), Decimal(0)), resolutions.get(ticker),
-        ))  # fmt: skip
-    return out
-
-
-def summary(rows: list[MarketResult]) -> str:
-    settled = [r for r in rows if r.pnl is not None]
-    open_ = [r for r in rows if r.pnl is None]
-    contracts = sum((r.contracts for r in settled), Decimal(0))
-    pnl = sum((r.pnl for r in settled), Decimal(0))
-    lines = [
-        f"settled markets: {len(settled)}  contracts filled: {contracts}  pnl: {pnl:.4f}"
-        + (f"  per contract: {100 * pnl / contracts:+.2f}c" if contracts else ""),
-        f"open markets with fills: {len(open_)}  open |position|: {sum((abs(r.position) for r in open_), Decimal(0))}",
-    ]
-    for r in sorted(settled, key=lambda r: r.pnl)[:5]:
-        lines.append(f"  worst: {r.market_id}  pnl {r.pnl:+.4f}  position at close {r.position}")
-    return "\n".join(lines)
