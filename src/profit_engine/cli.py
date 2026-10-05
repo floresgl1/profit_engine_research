@@ -288,6 +288,7 @@ def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="profit-engine", description="Read-only prediction market research engine.")
     p.add_argument("--db", default=str(DEFAULT_DB), help=f"SQLite file (default {DEFAULT_DB})")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--log-file", help="also write the log here (rotated at 5 MB, 3 backups), e.g. data/engine.log")
     sub = p.add_subparsers(dest="command", required=True)
 
     ing = sub.add_parser("ingest", help="poll venues, store books, log predictions, paper trade")
@@ -342,9 +343,17 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
+    handlers: list[logging.Handler] = [logging.StreamHandler()]
+    if args.log_file:
+        from logging.handlers import RotatingFileHandler
+
+        Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
+        handlers.append(RotatingFileHandler(args.log_file, maxBytes=5_000_000, backupCount=3))
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        handlers=handlers,
+        force=True,
     )
     logging.getLogger("httpx").setLevel(logging.INFO if args.verbose else logging.WARNING)
     return args.func(args)
