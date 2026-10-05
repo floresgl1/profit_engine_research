@@ -9,7 +9,12 @@ Each tick (default every 10 s):
   where we still hold a position;
 - fetch all books in one request and, per market, the trades since the last
   tick (re-reading a couple of seconds of overlap, de-duplicated by id);
-- step each market's MarketMaker and store its fills.
+- step every strategy's MarketMaker for the market on the same book and
+  trades (so strategies are compared on identical data) and store fills.
+
+A strategy with a model margin gets the model's probability for the market
+from `fair` (computed once per market per tick, only if some strategy needs
+it); None means no model price, and the strategy quotes like v1.
 
 Positions and cash are rebuilt from stored fills on start, so a restart
 loses only the queue places of the quotes that were resting.
@@ -19,12 +24,12 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 
-from profit_engine.core import InvalidOrderBook, Market, utc_now
+from profit_engine.core import InvalidOrderBook, Market, OrderBook, utc_now
 from profit_engine.maker.queue import PublicTrade
 from profit_engine.maker.quoter import MakerFill, MarketMaker, QuoterConfig
 from profit_engine.storage import Store
@@ -36,26 +41,39 @@ OVERLAP = timedelta(seconds=2)  # re-read this much before the last tick; ids de
 
 @dataclass(frozen=True)
 class RunnerConfig:
-    strategy: str = "join_touch_v1"
     interval: timedelta = timedelta(seconds=10)
     market_refresh: timedelta = timedelta(minutes=10)
+
+
+@dataclass(frozen=True)
+class Strategy:
+    name: str  # stored with every fill
+    quoter: QuoterConfig
+
+
+FairPrice = Callable[[Market, OrderBook], Decimal | None]
 
 
 class MakerRunner:
     def __init__(
         self,
-        source,  # KalshiSource (list_markets, fetch_books, fetch_trades, fetch_resolutions)
+        source,  # KalshiSource (list_markets, fetch_books, fetch_trades, fetch_markets, fetch_resolutions)
         store: Store,
-        quoter: QuoterConfig,
+        strategies: Sequence[Strategy],
         config: RunnerConfig = RunnerConfig(),
         now: Callable[[], datetime] = utc_now,
+        fair: FairPrice | None = None,
     ) -> None:
+        if not strategies or len({s.name for s in strategies}) != len(strategies):
+            raise ValueError("need at least one strategy, with distinct names")
         self.source = source
         self.store = store
-        self.quoter = quoter
+        self.strategies = list(strategies)
         self.config = config
         self._now = now
-        self.makers: dict[str, MarketMaker] = {}
+        self._fair = fair
+        self._needs_fair = any(s.quoter.model_margin is not None for s in strategies)
+        self.makers: dict[str, dict[str, MarketMaker]] = {s.name: {} for s in strategies}
         self.open: dict[str, Market] = {}
         self._since: dict[str, datetime] = {}
         self._seen: dict[str, dict[str, datetime]] = {}
@@ -63,15 +81,17 @@ class MakerRunner:
         self._restore()
 
     def _restore(self) -> None:
-        for _, _, fill in self.store.maker_fills(self.config.strategy):
-            m = self._maker(fill.market_id)
-            m.cash += fill.cash
-            m.position += fill.position
+        for s in self.strategies:
+            for _, _, fill in self.store.maker_fills(s.name):
+                m = self._maker(s, fill.market_id)
+                m.cash += fill.cash
+                m.position += fill.position
 
-    def _maker(self, ticker: str) -> MarketMaker:
-        if ticker not in self.makers:
-            self.makers[ticker] = MarketMaker(ticker, self.quoter)
-        return self.makers[ticker]
+    def _maker(self, strategy: Strategy, ticker: str) -> MarketMaker:
+        makers = self.makers[strategy.name]
+        if ticker not in makers:
+            makers[ticker] = MarketMaker(ticker, strategy.quoter)
+        return makers[ticker]
 
     # --- one tick ----------------------------------------------------------------------------
 
@@ -81,21 +101,33 @@ class MakerRunner:
             self._refresh_markets(now)
         books = self.source.fetch_books(list(self.open.values())) if self.open else {}
         fills: list[MakerFill] = []
-        for ticker in self.open:
-            maker = self._maker(ticker)
+        for ticker, market in self.open.items():
+            makers = [(s, self._maker(s, ticker)) for s in self.strategies]
             book = books.get(ticker)
             if book is None or isinstance(book, InvalidOrderBook):
-                maker.stop()
+                for _, maker in makers:
+                    maker.stop()
                 continue
-            if maker.quotes:
+            if any(maker.quotes for _, maker in makers):
                 trades = self._new_trades(ticker, now)
             else:  # nothing resting can fill: skip the request, start reading trades from now
                 self._since[ticker] = now
                 trades = []
-            for fill in maker.step(book, trades, now):
-                self.store.add_maker_fill(self.config.strategy, "kalshi", fill)
-                fills.append(fill)
+            fair = self._fair_price(market, book)
+            for strategy, maker in makers:
+                for fill in maker.step(book, trades, now, fair):
+                    self.store.add_maker_fill(strategy.name, "kalshi", fill)
+                    fills.append(fill)
         return fills
+
+    def _fair_price(self, market: Market, book: OrderBook) -> Decimal | None:
+        if not self._needs_fair or self._fair is None:
+            return None
+        try:
+            return self._fair(market, book)
+        except Exception:  # a model failure must not stop quoting; v2 falls back to v1 behaviour
+            log.exception("model price failed for %s", market.market_id)
+            return None
 
     def _new_trades(self, ticker: str, now: datetime) -> list[PublicTrade]:
         since = self._since.get(ticker)
@@ -114,7 +146,8 @@ class MakerRunner:
     def _refresh_markets(self, now: datetime) -> None:
         listed = {m.market_id: m for m in self.source.list_markets()}
         for ticker in set(self.open) - set(listed):
-            self._maker(ticker).stop()
+            for s in self.strategies:
+                self._maker(s, ticker).stop()
             self._since.pop(ticker, None)
             self._seen.pop(ticker, None)
         self.open = listed
@@ -122,7 +155,7 @@ class MakerRunner:
         self._record_resolutions()
 
     def _record_resolutions(self) -> None:
-        held = [t for t, m in self.makers.items() if m.position != 0 and t not in self.open]
+        held = {t for makers in self.makers.values() for t, m in makers.items() if m.position != 0 and t not in self.open}
         unresolved = [t for t in held if self.store.resolution("kalshi", t) is None]
         if not unresolved:
             return
@@ -142,11 +175,15 @@ class MakerRunner:
                 log.exception("maker tick failed")
             n += 1
             if n % 30 == 0 or n == 1:
-                quoting = sum(1 for t in self.open if self._maker(t).quotes)
-                exposure = sum(abs(m.position) for m in self.makers.values())
+                parts = []
+                for s in self.strategies:
+                    makers = self.makers[s.name]
+                    quoting = sum(1 for t in self.open if t in makers and makers[t].quotes)
+                    exposure = sum(abs(m.position) for m in makers.values())
+                    parts.append(f"{s.name}: {quoting} quoting, |position| {exposure}")
                 log.info(
-                    "maker tick %d: %d open markets, %d quoting, %d fills so far, |position| %s, cpu %.3fs",
-                    n, len(self.open), quoting, fills_total, exposure, time.process_time() - cpu,
+                    "maker tick %d: %d open markets, %d fills so far; %s; cpu %.3fs",
+                    n, len(self.open), fills_total, "; ".join(parts), time.process_time() - cpu,
                 )  # fmt: skip
             sleep = self.config.interval.total_seconds() - (time.monotonic() - started)
             if sleep > 0 and (cycles is None or n < cycles):

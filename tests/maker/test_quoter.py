@@ -75,3 +75,18 @@ def test_one_sided_book_pulls_quotes():
 def test_config_validation():
     with pytest.raises(ValueError):
         QuoterConfig(size=D(10), max_position=D(5))
+
+
+def test_model_veto_hand_computed():
+    # book 0.40 / 0.44, margin 0.20.
+    m = MarketMaker("M", QuoterConfig(model_margin=D("0.20")))
+    m.step(book(), [], at(0), fair=D("0.19"))  # bid 0.40 > 0.19 + 0.20 -> veto bid; ask 0.44 >= -0.01 -> keep
+    assert set(m.quotes) == {"ask"}
+    m.step(book(), [], at(1), fair=D("0.20"))  # bid 0.40 == 0.40: allowed again
+    assert set(m.quotes) == {"bid", "ask"}
+    m.step(book(), [], at(2), fair=D("0.65"))  # ask 0.44 < 0.65 - 0.20 = 0.45 -> veto ask
+    assert set(m.quotes) == {"bid"}
+    m.step(book(), [], at(3), fair=None)  # model abstains: quote like v1
+    assert set(m.quotes) == {"bid", "ask"}
+    with pytest.raises(ValueError):
+        QuoterConfig(model_margin=D("-0.01"))

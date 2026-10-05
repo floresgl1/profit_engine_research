@@ -6,7 +6,7 @@ from factories import make_market
 from profit_engine.core import Level, OrderBook, Resolution
 from profit_engine.maker.queue import PublicTrade
 from profit_engine.maker.quoter import MakerFill, QuoterConfig
-from profit_engine.maker.runner import MakerRunner, RunnerConfig, results, summary
+from profit_engine.maker.runner import MakerRunner, RunnerConfig, Strategy, results, summary
 from profit_engine.storage import Store
 from profit_engine.venues.kalshi.adapter import parse_trade
 
@@ -50,9 +50,9 @@ class FakeSource:
         return {m.market_id: self.resolved[m.market_id] for m in markets if m.market_id in self.resolved}
 
 
-def runner(source, store, clock):
-    return MakerRunner(source, store, QuoterConfig(maker_fee_rate=D(0)), RunnerConfig(market_refresh=timedelta(seconds=30)),
-                       now=clock)
+def runner(source, store, clock, strategies=None, fair=None):
+    strategies = strategies or [Strategy("v1", QuoterConfig(maker_fee_rate=D(0)))]
+    return MakerRunner(source, store, strategies, RunnerConfig(market_refresh=timedelta(seconds=30)), now=clock, fair=fair)
 
 
 def test_fills_once_per_trade_and_survive_restart(tmp_path):
@@ -66,7 +66,7 @@ def test_fills_once_per_trade_and_survive_restart(tmp_path):
     assert r.tick() == []  # re-read with overlap, de-duplicated by id
     assert src.calls[-1] == at(10) - timedelta(seconds=2)
     again = runner(src, store, clock)  # restart: position and cash rebuilt from the store
-    assert again.makers["M"].position == D(-3) and again.makers["M"].cash == D("1.32")
+    assert again.makers["v1"]["M"].position == D(-3) and again.makers["v1"]["M"].cash == D("1.32")
 
 
 def test_closed_market_stops_quoting_and_records_resolution(tmp_path):
@@ -76,11 +76,11 @@ def test_closed_market_stops_quoting_and_records_resolution(tmp_path):
     src.trades = [PublicTrade("a", at(5), D("0.39"), D(1), False)]  # swept through our 0.40 bid: +10
     clock.t = at(10)
     r.tick()
-    assert r.makers["M"].position == D(10)
+    assert r.makers["v1"]["M"].position == D(10)
     src.open, src.resolved = [], {"M": Resolution("kalshi", "M", D(1), at(40))}
     clock.t = at(40)
     r.tick()
-    assert r.makers["M"].quotes == {}
+    assert r.makers["v1"]["M"].quotes == {}
     assert store.resolution("kalshi", "M").yes_value == D(1)
 
 
@@ -119,4 +119,39 @@ def test_no_trade_requests_while_not_quoting(tmp_path):
     for s in (0, 10, 20):
         clock.t = at(s)
         r.tick()
-    assert src.calls == [] and r.makers["M"].quotes == {}
+    assert src.calls == [] and r.makers["v1"]["M"].quotes == {}
+
+
+def test_strategies_share_data_and_v2_vetoes_with_the_model(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    v1 = Strategy("v1", QuoterConfig(maker_fee_rate=D(0)))
+    v2 = Strategy("v2", QuoterConfig(maker_fee_rate=D(0), model_margin=D("0.20")))
+    # book 0.40 / 0.44. Model says 0.10: buying at 0.40 is 30c against us (> 20c) -> v2 pulls its bid.
+    r = runner(src, store, clock, [v1, v2], fair=lambda market, book: D("0.10"))
+    r.tick()
+    assert set(r.makers["v1"]["M"].quotes) == {"bid", "ask"}
+    assert set(r.makers["v2"]["M"].quotes) == {"ask"}
+    src.trades = [PublicTrade("a", at(5), D("0.39"), D(1), False)]  # sweeps the bid: only v1 was there
+    clock.t = at(10)
+    r.tick()
+    assert [s for s, _, _ in store.maker_fills()] == ["v1"]
+
+
+def test_model_failure_falls_back_to_v1_behaviour(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    v2 = Strategy("v2", QuoterConfig(maker_fee_rate=D(0), model_margin=D("0.20")))
+
+    def broken(market, book):
+        raise RuntimeError("LAMP down")
+
+    r = runner(src, store, clock, [v2], fair=broken)
+    r.tick()
+    assert set(r.makers["v2"]["M"].quotes) == {"bid", "ask"}
+
+
+def test_strategy_names_must_be_distinct(tmp_path):
+    import pytest
+
+    s = Strategy("same", QuoterConfig())
+    with pytest.raises(ValueError):
+        MakerRunner(FakeSource(), Store(tmp_path / "m.db"), [s, s])
