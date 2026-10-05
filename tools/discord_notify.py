@@ -11,7 +11,8 @@ Discord webhook URL.
 Alerts (health):
 - the maker's last tick is more than STALE old (the engine is down or stuck);
 - ERROR_LIMIT or more ERROR lines in the log in the last hour;
-- a strategy holds the maximum position in LIMIT_MARKETS or more open markets;
+- a strategy holds the maximum position in LIMIT_MARKETS or more open markets
+  (resolved only once it is down to CLEAR_MARKETS or fewer);
 - the data directory is larger than DISK_LIMIT bytes.
 Each alert repeats at most every REPEAT while it lasts, and a short
 "resolved" message is sent when it clears (state in ~/.profit_engine_alerts.json).
@@ -36,7 +37,8 @@ from pathlib import Path
 
 STALE = timedelta(minutes=15)
 ERROR_LIMIT = 5
-LIMIT_MARKETS = 3
+LIMIT_MARKETS = 3  # alert when a strategy is at its limit in this many open markets...
+CLEAR_MARKETS = 1  # ...and only call it resolved at this many or fewer (no flapping around 3)
 MAX_POSITION = Decimal(50)
 DISK_LIMIT = 2_000_000_000
 REPEAT = timedelta(hours=6)
@@ -89,8 +91,13 @@ def open_positions(store) -> dict[str, dict[str, Decimal]]:
 # --- checks ------------------------------------------------------------------------------------
 
 
-def problems(store, log_path: str | None, data_dir: str, now: datetime) -> dict[str, str]:
-    """Current problems, keyed so repeats of the same problem can be throttled."""
+def problems(
+    store, log_path: str | None, data_dir: str, now: datetime, active: frozenset[str] | set[str] = frozenset()
+) -> dict[str, str]:
+    """Current problems, keyed so repeats of the same problem can be throttled.
+
+    `active`: keys alerted earlier and not yet resolved (for hysteresis).
+    """
     found = {}
     ticks = store.maker_ticks()
     if not ticks:
@@ -104,7 +111,8 @@ def problems(store, log_path: str | None, data_dir: str, now: datetime) -> dict[
             found["errors"] = f"{len(errors)} ERROR lines in the last hour. Latest:\n{errors[-1][:300]}"
     for strategy, positions in open_positions(store).items():
         full = [m for m, p in positions.items() if abs(p) >= MAX_POSITION]
-        if len(full) >= LIMIT_MARKETS:
+        key = f"limits:{strategy}"
+        if len(full) >= LIMIT_MARKETS or (key in active and len(full) > CLEAR_MARKETS):
             found[f"limits:{strategy}"] = f"{strategy} is at its position limit in {len(full)} open markets: {', '.join(sorted(full)[:5])}"
     size = dir_size(data_dir)
     if size > DISK_LIMIT:
@@ -128,7 +136,42 @@ def alerts_to_send(current: dict[str, str], state: dict[str, str], now: datetime
     return messages, new_state
 
 
-def summary_text(store, data_dir: str, now: datetime, pair_from=None) -> str:
+def last_tick_line(log_path: str | None) -> str | None:
+    """The newest 'maker tick' log line, from 'maker tick' on."""
+    if not log_path or not Path(log_path).exists():
+        return None
+    for line in reversed(Path(log_path).read_text(errors="replace").splitlines()[-2000:]):
+        if "maker tick" in line:
+            return line[line.index("maker tick"):]
+    return None
+
+
+def status_lines(store, log_path: str | None, data_dir: str, now: datetime, previous: dict) -> list[str]:
+    """Engine health for the daily summary: errors, quoting, positions, data size and growth."""
+    lines = []
+    if log_path:
+        lines.append(f"errors in the last 24 h: {len(recent_errors(log_path, now, timedelta(hours=24)))}")
+        tick = last_tick_line(log_path)
+        if tick:
+            lines.append(tick[:300])
+    for strategy, positions in sorted(open_positions(store).items()):
+        held = {m: p for m, p in positions.items() if p != 0}
+        at_limit = sum(1 for p in held.values() if abs(p) >= MAX_POSITION)
+        lines.append(f"{strategy}: {len(held)} open markets held, |position| {sum(abs(p) for p in held.values())}, "
+                     f"{at_limit} at the limit")  # fmt: skip
+    size = dir_size(data_dir)
+    files = sorted(((dir_size(str(f)) if f.is_dir() else f.stat().st_size, f.name) for f in Path(data_dir).iterdir()), reverse=True)
+    growth = ""
+    if previous.get("size") is not None and previous.get("at"):
+        hours = (now - datetime.fromisoformat(previous["at"])).total_seconds() / 3600
+        if hours > 0:
+            growth = f", +{(size - previous['size']) / 1e6 * 24 / hours:.0f} MB/day"
+    lines.append(f"data {size / 1e6:.0f} MB{growth}: " + ", ".join(f"{n} {b / 1e6:.0f} MB" for b, n in files[:4]))
+    return lines
+
+
+def summary_text(store, data_dir: str, now: datetime, pair_from=None, log_path: str | None = None,
+                 previous: dict | None = None) -> str:
     from profit_engine.core import midpoint
     from profit_engine.maker.report import render
 
@@ -144,7 +187,8 @@ def summary_text(store, data_dir: str, now: datetime, pair_from=None) -> str:
     report = render(by_strategy, resolutions, mark, store.maker_runs(), pair_from=pair_from)
     ticks = store.maker_ticks()
     age = f"{int((now - ticks[-1]).total_seconds() // 60)} min ago" if ticks else "never"
-    head = f"**profit engine daily** ({now:%Y-%m-%d %H:%M} UTC), last maker tick {age}, data {dir_size(data_dir) / 1e6:.0f} MB"
+    head = "\n".join([f"**profit engine daily** ({now:%Y-%m-%d %H:%M} UTC), last maker tick {age}",
+                      *status_lines(store, log_path, data_dir, now, previous or {})])
     return fit(head, report)
 
 
@@ -180,6 +224,7 @@ def main(argv: list[str] | None = None, now: datetime | None = None, send: Calla
     p.add_argument("--data-dir", default="data")
     p.add_argument("--webhook-file", default="~/.discord_webhook")
     p.add_argument("--state", default="~/.profit_engine_alerts.json")
+    p.add_argument("--summary-state", default="~/.profit_engine_summary.json", help="last data size, for growth per day")
     p.add_argument("--pair-from", help="first paired day for the summary (YYYY-MM-DD)")
     p.add_argument("--dry-run", action="store_true", help="print instead of posting")
     args = p.parse_args(argv)
@@ -194,11 +239,15 @@ def main(argv: list[str] | None = None, now: datetime | None = None, send: Calla
     store = Store(args.db)
     try:
         if args.command == "summary":
-            send(summary_text(store, args.data_dir, now, date.fromisoformat(args.pair_from) if args.pair_from else None))
+            summary_path = Path(args.summary_state).expanduser()
+            previous = json.loads(summary_path.read_text()) if summary_path.exists() else {}
+            pair_from = date.fromisoformat(args.pair_from) if args.pair_from else None
+            send(summary_text(store, args.data_dir, now, pair_from, args.log, previous))
+            summary_path.write_text(json.dumps({"size": dir_size(args.data_dir), "at": now.isoformat()}))
             return 0
         state_path = Path(args.state).expanduser()
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
-        messages, new_state = alerts_to_send(problems(store, args.log, args.data_dir, now), state, now)
+        messages, new_state = alerts_to_send(problems(store, args.log, args.data_dir, now, set(state)), state, now)
         for m in messages:
             send(m)
         state_path.write_text(json.dumps(new_state))

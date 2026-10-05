@@ -127,3 +127,50 @@ def test_post_retries_once_on_rate_limit(monkeypatch):
     monkeypatch.setattr(httpx, "post", lambda url, json, timeout: calls.append(json) or R(next(codes)))
     dn.post("https://discord.com/api/webhooks/1/abc", "hi", sleep=slept.append)
     assert len(calls) == 2 and slept == [1.5] and calls[0]["content"] == "hi"
+
+
+def test_limit_alert_does_not_flap(tmp_path):
+    (tmp_path / "data").mkdir()
+
+    def at_limit(n):
+        s = Store(tmp_path / f"m{n}.db")
+        s.add_maker_tick(NOW)
+        for i in range(n):
+            s.add_maker_fill("v1", "kalshi", fill(f"KXHIGHNY-26OCT06-B{i}", "bid", 50))
+        return s
+
+    data = str(tmp_path / "data")
+    assert "limits:v1" in dn.problems(at_limit(3), None, data, NOW)  # alert at 3
+    assert "limits:v1" not in dn.problems(at_limit(2), None, data, NOW)  # not alerted yet: 2 is quiet
+    assert "limits:v1" in dn.problems(at_limit(2), None, data, NOW, active={"limits:v1"})  # alerted: 2 still counts
+    assert "limits:v1" not in dn.problems(at_limit(1), None, data, NOW, active={"limits:v1"})  # resolved at 1
+
+
+def test_status_lines_hand_computed(tmp_path):
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "maker.db").write_bytes(b"x" * 3_000_000)
+    (data / "research.db").write_bytes(b"x" * 1_000_000)
+    log = tmp_path / "engine.log"
+    log.write_text("\n".join([
+        "2026-10-05 13:00:00,000 ERROR x: old but within 24 h",
+        "2026-10-06 12:00:00,000 INFO profit_engine.maker.runner: maker tick 30: 12 open markets, 4 fills so far; v1: 6 quoting",
+    ]))
+    s = store_with(tmp_path, fills=[("v1", fill("KXHIGHNY-26OCT06-B1", "bid", 50)), ("v1", fill("KXHIGHNY-26OCT06-B2", "ask", 20))])
+    previous = {"size": 2_000_000, "at": (NOW - timedelta(hours=12)).isoformat()}
+    lines = dn.status_lines(s, str(log), str(data), NOW, previous)
+    assert lines[0] == "errors in the last 24 h: 1"
+    assert lines[1].startswith("maker tick 30: 12 open markets")
+    assert lines[2] == "v1: 2 open markets held, |position| 70, 1 at the limit"
+    # 4 MB now vs 2 MB 12 h ago -> +4 MB/day; files largest first
+    assert lines[3] == "data 4 MB, +4 MB/day: maker.db 3 MB, research.db 1 MB"
+
+
+def test_summary_records_size_for_next_growth(tmp_path):
+    store_with(tmp_path).close()
+    (tmp_path / "data").mkdir()
+    summary_state = tmp_path / "summary.json"
+    sent = []
+    dn.main(["summary", "--db", str(tmp_path / "maker.db"), "--log", str(tmp_path / "none.log"), "--data-dir",
+             str(tmp_path / "data"), "--summary-state", str(summary_state)], now=NOW, send=sent.append)
+    assert json.loads(summary_state.read_text())["at"] == NOW.isoformat() and len(sent) == 1

@@ -100,8 +100,10 @@ posts to the webhook.
    - hourly: `cd /home/YOURUSER/profit_engine_research && .venv/bin/python tools/discord_notify.py health`
 
 Health alerts: maker's last tick over 15 minutes old; 5+ ERROR log lines in
-the last hour; a strategy at its position limit in 3+ open markets; `data/`
-over 2 GB. Each repeats at most every 6 hours while it lasts and sends a
+the last hour; a strategy at its position limit in 3+ open markets (resolved
+only once it is down to 1, so it doesn't flap); `data/` over 2 GB. The daily
+summary also lists errors in the last 24 h, the latest maker tick line, each
+strategy's open positions, and data size, growth per day and largest files. Each repeats at most every 6 hours while it lasts and sends a
 "resolved" message when it clears (state in `~/.profit_engine_alerts.json`).
 
 ## Current schedule (as deployed, 2026-10-05)
