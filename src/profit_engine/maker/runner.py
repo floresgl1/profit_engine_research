@@ -226,9 +226,10 @@ class MakerRunner:
                     parts.append(f"{s.name}: {quoting} quoting, open |position| {exposure}")
                 # ticks run back to back when one takes longer than the interval: "s apart" is the real pace
                 log.info(
-                    "maker tick %d: %d open markets, %d fills so far; %s; %d ticks %.1fs apart, cpu %.3fs per tick",
+                    "maker tick %d: %d open markets, %d fills so far; %s; %d ticks %.1fs apart (target %gs), "
+                    "cpu %.3fs per tick",
                     n, len(self.open), fills_total, "; ".join(parts), window_ticks,
-                    elapsed / window_ticks, window_cpu / window_ticks,
+                    elapsed / window_ticks, self.config.interval.total_seconds(), window_cpu / window_ticks,
                 )  # fmt: skip
                 window, window_ticks, window_cpu = time.monotonic(), 0, 0.0
             sleep = self.config.interval.total_seconds() - (time.monotonic() - started)

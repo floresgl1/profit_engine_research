@@ -622,6 +622,10 @@ class Store:
     def maker_ticks(self) -> list[datetime]:
         return [from_ts(r[0]) for r in self._conn.execute("SELECT at FROM maker_ticks ORDER BY at")]
 
+    def last_maker_tick(self) -> datetime | None:
+        row = self._conn.execute("SELECT MAX(at) FROM maker_ticks").fetchone()
+        return from_ts(row[0]) if row and row[0] else None
+
     def add_maker_run(self, strategy: str, started_at: datetime) -> None:
         with self._conn:
             self._conn.execute("INSERT INTO maker_runs VALUES (?, ?)", (strategy, ts(started_at)))
