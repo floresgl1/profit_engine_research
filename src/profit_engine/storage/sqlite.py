@@ -626,6 +626,14 @@ class Store:
         row = self._conn.execute("SELECT MAX(at) FROM maker_ticks").fetchone()
         return from_ts(row[0]) if row and row[0] else None
 
+    def last_write(self) -> datetime | None:
+        """The newest maker tick or stored book: when a running engine last wrote here."""
+        times = [self.last_maker_tick()]
+        row = self._conn.execute("SELECT received_at FROM book_snapshots ORDER BY rowid DESC LIMIT 1").fetchone()
+        if row:
+            times.append(from_ts(row[0]))
+        return max((t for t in times if t is not None), default=None)
+
     def add_maker_run(self, strategy: str, started_at: datetime) -> None:
         with self._conn:
             self._conn.execute("INSERT INTO maker_runs VALUES (?, ?)", (strategy, ts(started_at)))
