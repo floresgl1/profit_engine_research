@@ -84,7 +84,7 @@ def test_summary_fits_discord_limit(tmp_path):
     fills = [("join_touch_v1", fill(f"KXHIGHNY-26OCT0{d}-B{i}", "bid", 1)) for d in range(1, 10) for i in range(30)]
     (tmp_path / "data").mkdir()
     text = dn.summary_text(store_with(tmp_path, fills=fills), str(tmp_path / "data"), NOW)
-    assert len(text) <= dn.CONTENT_LIMIT and text.startswith("**profit engine daily**")
+    assert len(text) <= dn.CONTENT_LIMIT and text.startswith("**Profit engine · Tue Oct 6**")
 
 
 def test_main_health_dry_run_writes_state(tmp_path):
@@ -146,24 +146,103 @@ def test_limit_alert_does_not_flap(tmp_path):
     assert "limits:v1" not in dn.problems(at_limit(1), None, data, NOW, active={"limits:v1"})  # resolved at 1
 
 
-def test_status_lines_hand_computed(tmp_path):
+TICK_LINE = ("2026-10-06 12:27:00,000 INFO profit_engine.maker.runner: maker tick 900: 12 open markets, 4 fills so far; "
+             "v1: 6 quoting, open |position| 0; 150 ticks {apart}s apart{target}, cpu 0.024s per tick")
+
+
+def health_setup(tmp_path, log_lines):
     data = tmp_path / "data"
     data.mkdir()
     (data / "maker.db").write_bytes(b"x" * 3_000_000)
     (data / "research.db").write_bytes(b"x" * 1_000_000)
     log = tmp_path / "engine.log"
-    log.write_text("\n".join([
-        "2026-10-05 13:00:00,000 ERROR x: old but within 24 h",
-        "2026-10-06 12:00:00,000 INFO profit_engine.maker.runner: maker tick 30: 12 open markets, 4 fills so far; v1: 6 quoting",
-    ]))
-    s = store_with(tmp_path, fills=[("v1", fill("KXHIGHNY-26OCT06-B1", "bid", 50)), ("v1", fill("KXHIGHNY-26OCT06-B2", "ask", 20))])
+    log.write_text("\n".join(log_lines))
     previous = {"size": 2_000_000, "at": (NOW - timedelta(hours=12)).isoformat()}
-    lines = dn.status_lines(s, str(log), str(data), NOW, previous)
-    assert lines[0] == "errors in the last 24 h: 1"
-    assert lines[1].startswith("maker tick 30: 12 open markets")
-    assert lines[2] == "v1: 2 open markets held, |position| 70, 1 at the limit"
-    # 4 MB now vs 2 MB 12 h ago -> +4 MB/day; files largest first
-    assert lines[3] == "data 4 MB, +4 MB/day: maker.db 3 MB, research.db 1 MB"
+    return str(log), str(data), previous
+
+
+def test_health_is_one_line_when_all_is_well(tmp_path):
+    log, data, previous = health_setup(tmp_path, [
+        "2026-10-05 13:00:00,000 ERROR x: old but within 24 h",
+        TICK_LINE.format(apart="2.0", target=" (target 2s)"),
+    ])
+    s = store_with(tmp_path, fills=[("v1", fill("KXHIGHNY-26OCT06-B1", "bid", 50))])  # at the limit in 1 market: fine
+    # 4 MB now vs 2 MB 12 h ago -> +4 MB/day
+    assert dn.health_lines(s, log, data, NOW, previous) == [
+        ":white_check_mark: running normally: ticks 2.0 s apart, 1 error in 24 h, data 4 MB (+4 MB/day)"]
+
+
+def test_health_lists_each_problem_then_the_facts(tmp_path):
+    errors = [f"2026-10-06 0{h}:00:00,000 ERROR profit_engine.maker.runner: maker tick failed" for h in range(6)]
+    log, data, previous = health_setup(tmp_path, [*errors, TICK_LINE.format(apart="3.5", target=" (target 2s)")])
+    full = [("join_touch_v1", fill(f"KXHIGHNY-26OCT06-B{i}", "bid", 50)) for i in range(3)]
+    s = store_with(tmp_path, last_tick=NOW - timedelta(minutes=20), fills=full)
+    assert dn.health_lines(s, log, data, NOW, previous) == [
+        ":warning: the maker's last tick was 20 min ago: the always-on task may be down",
+        ":warning: maker ticks 3.5 s apart, target 2 s: requests are slow or rate limited "
+        "(`grep -c ' -> 429' data/engine.log`)",
+        ":warning: 6 errors in the last 24 h; latest: maker tick failed",
+        ":warning: v1 join the touch is at its position limit in 3 open markets",
+        "-# ticks 3.5 s apart, data 4 MB (+4 MB/day)",
+    ]
+
+
+def test_health_tick_line_without_target_never_counts_as_slow(tmp_path):
+    log, data, previous = health_setup(tmp_path, [TICK_LINE.format(apart="9.0", target="")])  # before the target was logged
+    lines = dn.health_lines(store_with(tmp_path), log, data, NOW, previous)
+    assert lines[0].startswith(":white_check_mark: running normally: ticks 9.0 s apart, 0 errors")
+
+
+def test_results_hand_computed(tmp_path):
+    from profit_engine.core import Level, OrderBook
+
+    fills = [
+        ("join_touch_v1", fill("KXHIGHNY-26OCT03-B0", "bid", 10)),  # before --since: not counted
+        ("join_touch_v1", fill("KXHIGHNY-26OCT04-B1", "bid", 10)),  # YES: +6.00
+        ("join_touch_v1", fill("KXHIGHNY-26OCT05-B2", "bid", 5)),  # NO: -2.00
+        ("join_touch_v1", fill("KXHIGHNY-26OCT06-B3", "bid", 10)),  # open, mid 0.50: +1.00
+        ("model_veto_v2", fill("KXHIGHNY-26OCT04-B1", "bid", 10)),  # YES: +6.00
+    ]
+    s = store_with(tmp_path, fills=fills)
+    for market, value in (("B0", 0), ("B1", 1), ("B2", 0)):
+        day = {"B0": 3, "B1": 4, "B2": 5}[market]
+        s.upsert_resolution(Resolution("kalshi", f"KXHIGHNY-26OCT0{day}-{market}", D(value), NOW))
+    s.add_snapshot(OrderBook("kalshi", "KXHIGHNY-26OCT06-B3", (Level(D("0.48"), D(5)),), (Level(D("0.52"), D(5)),), NOW))
+    # v1: days +6, -2: mean 2, sd 5.657, half 12.706 x 5.657 / sqrt 2 = 50.82; 4.00 over 15 contracts.
+    # v2 - v1: days 0, +2: mean 1, half 12.706 x 1.414 / sqrt 2 = 12.71.
+    assert dn.results_lines(s, since=datetime(2026, 10, 4).date()) == [
+        "**Last settled day: Mon Oct 5**",
+        "v1 join the touch: -$2.00 on 5 contracts",
+        "v2 model veto: no fills",
+        "",
+        "**Since Sun Oct 4** (2 of 10 settled days for the stop rule)",
+        "v1 join the touch: +$2.00 a day, not clear yet",
+        "-# 95% range -$48.82 to +$52.82 · total +$4.00 · +26.67c per contract",
+        "v2 model veto: +$6.00 a day, needs 2+ days",
+        "-# total +$6.00 · +60.00c per contract · 1 day",
+        "v2 vs v1: +$1.00 a day, not clear yet",
+        "-# 95% range -$11.71 to +$13.71",
+        "",
+        "**Still open** (at current prices)",
+        "Tue Oct 6: v1 +$1.00",
+    ]
+
+
+def test_verdicts():
+    assert dn.verdict(-3.0, -1.0, 5) == "clearly losing"
+    assert dn.verdict(1.0, 3.0, 5) == "clearly winning"
+    assert dn.verdict(-1.0, 3.0, 5) == "not clear yet"
+    assert dn.verdict(float("nan"), float("nan"), 1) == "needs 2+ days"
+
+
+def test_stop_rule_due_after_ten_days(tmp_path):
+    fills = [("join_touch_v1", fill(f"KXHIGHNY-26OCT{d:02d}-B1", "ask", 10)) for d in range(1, 11)]
+    s = store_with(tmp_path, fills=fills)
+    for d in range(1, 11):
+        s.upsert_resolution(Resolution("kalshi", f"KXHIGHNY-26OCT{d:02d}-B1", D(1), NOW))  # every day -6.00
+    lines = dn.results_lines(s, since=datetime(2026, 10, 1).date())
+    assert "**Since Thu Oct 1** (10 settled days: the stop rule is due; retire v1 and v2 if both are clearly losing)" in lines
+    assert "v1 join the touch: -$6.00 a day, clearly losing" in lines
 
 
 def test_summary_records_size_for_next_growth(tmp_path):

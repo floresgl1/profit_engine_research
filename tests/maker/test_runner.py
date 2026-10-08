@@ -220,7 +220,7 @@ def test_tick_log_counts_open_markets_only(tmp_path, caplog):
     with caplog.at_level(logging.INFO):
         r.run_forever(cycles=1)
     assert "v1: 1 quoting, open |position| 0" in caplog.text
-    assert re.search(r"1 ticks \d+\.\ds apart, cpu \d+\.\d{3}s per tick", caplog.text)  # the real pace
+    assert re.search(r"1 ticks \d+\.\ds apart \(target 10s\), cpu \d+\.\d{3}s per tick", caplog.text)  # the real pace
 
 
 def test_late_published_trade_is_read_at_two_second_ticks(tmp_path):

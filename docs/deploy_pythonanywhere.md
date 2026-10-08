@@ -97,15 +97,33 @@ posts to the webhook.
 4. Test: `cd ~/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --dry-run`
    prints the message; without `--dry-run` it posts.
 5. Tasks page -> Scheduled tasks (times are UTC):
-   - daily at 12:30: `cd /home/YOURUSER/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --pair-from 2026-10-06`
+   - daily at 12:30: `cd /home/YOURUSER/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --since 2026-10-10`
    - hourly: `cd /home/YOURUSER/profit_engine_research && .venv/bin/python tools/discord_notify.py health`
 
 Health alerts: maker's last tick over 15 minutes old; 5+ ERROR log lines in
 the last hour; a strategy at its position limit in 3+ open markets (resolved
-only once it is down to 1, so it doesn't flap); `data/` over 2 GB. The daily
-summary also lists errors in the last 24 h, the latest maker tick line, each
-strategy's open positions, and data size, growth per day and largest files. Each repeats at most every 6 hours while it lasts and sends a
-"resolved" message when it clears (state in `~/.profit_engine_alerts.json`).
+only once it is down to 1, so it doesn't flap); `data/` over 2 GB. Each
+repeats at most every 6 hours while it lasts and sends a "resolved" message
+when it clears (state in `~/.profit_engine_alerts.json`).
+
+The daily summary, in plain words:
+- one :white_check_mark: line when healthy (tick spacing, errors in 24 h,
+  data size and growth per day), or a :warning: line per problem: maker
+  stale, 5+ errors in 24 h, ticks more than 1.5x their target apart, a
+  strategy at its limit in 3+ open markets, `data/` over 2 GB;
+- the last settled day per strategy, in dollars;
+- from `--since` (the first event day it counts; the stop rule counts from
+  2026-10-10, the first event day entirely at 2-second ticks: Oct 9's
+  markets opened at 14:00 UTC Oct 8, about 3 hours before the switch):
+  mean per day with a verdict
+  from its 95% interval ("clearly losing" if the whole interval is below
+  zero, "clearly winning" if above, otherwise "not clear yet"), the
+  interval, total and per-contract PnL in small text, v2 vs v1 paired the
+  same way, and how many of the stop rule's 10 settled days are in;
+- days still open, marked at current prices.
+
+`--pair-from` still works as another name for `--since`. The full
+statistics (worst day, drawdown, every day) stay in `maker-report`.
 
 ## Current schedule (as deployed, 2026-10-05; maker at 2-second ticks for the speed experiment)
 
@@ -140,7 +158,7 @@ Before the speed experiment the same command ran without `--maker-interval 2` (1
 Profit engine commands:
 
 ```
-cd /home/floresgl907/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --pair-from 2026-10-06
+cd /home/floresgl907/profit_engine_research && .venv/bin/python tools/discord_notify.py summary --since 2026-10-10
 cd /home/floresgl907/profit_engine_research && .venv/bin/python tools/discord_notify.py health
 ```
 
