@@ -178,3 +178,44 @@ def test_recording_reads_trades_even_when_not_quoting(tmp_path):
     clock.t = at(10)
     r.tick()
     assert r.makers["v1"]["M"].quotes == {} and [t.trade_id for t in store.maker_trades("M")] == ["a"]
+
+
+def test_flat_market_still_gets_its_resolution(tmp_path):
+    # Bought 10 and sold 10 back: position 0. The day can only count as settled once
+    # this market has a resolution, so the runner must fetch it anyway.
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    store.add_maker_fill("v1", "kalshi", MakerFill("M", "bid", D("0.40"), D(10), D(0), T0))
+    store.add_maker_fill("v1", "kalshi", MakerFill("M", "ask", D("0.44"), D(10), D(0), T0))
+    src.open, src.resolved = [], {"M": Resolution("kalshi", "M", D(0), at(5))}
+    r = runner(src, store, clock)
+    assert r.makers["v1"]["M"].position == 0
+    r.tick()
+    assert store.resolution("kalshi", "M").yes_value == D(0)
+
+
+def test_deep_level_changes_are_not_recorded(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    depth = {"n": 7}
+
+    def books(markets):
+        bids = tuple(Level(D("0.40") - D("0.01") * i, D(5)) for i in range(depth["n"]))
+        return {m.market_id: OrderBook("kalshi", m.market_id, bids, (Level(D("0.44"), D(5)),), T0) for m in markets}
+
+    src.fetch_books = books
+    r = runner(src, store, clock)
+    r.tick()
+    depth["n"] = 9  # only levels 6+ change: the stored top 5 are identical
+    clock.t = at(10)
+    r.tick()
+    assert len(list(store.books("kalshi", "M"))) == 1
+
+
+def test_tick_log_counts_open_markets_only(tmp_path, caplog):
+    import logging
+
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    store.add_maker_fill("v1", "kalshi", MakerFill("OLD", "bid", D("0.40"), D(50), D(0), T0))  # settled market
+    r = runner(src, store, clock)
+    with caplog.at_level(logging.INFO):
+        r.run_forever(cycles=1)
+    assert "v1: 1 quoting, open |position| 0" in caplog.text

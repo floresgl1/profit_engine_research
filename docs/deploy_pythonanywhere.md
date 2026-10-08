@@ -145,6 +145,27 @@ The webhook URL is in `~/.discord_webhook` (mode 600), not in the repo.
 After changing the always-on command, restart the task and check that
 `data/engine.log` appears; a `git pull` alone doesn't change a running task.
 
+## One-time: shrink the databases (2026-10-08)
+
+Until 2026-10-08 every stored book kept its full depth (about 54 price
+levels, ~1 KB); now only the best 5 levels per side are kept (~150 bytes).
+To trim the books already stored and give the space back:
+
+1. Tasks page: pause (or stop) the always-on task. Compaction needs the
+   databases to itself.
+2. Check free space: vacuuming temporarily needs about as much free disk as
+   the file being compacted (`du -sh data/*.db`; quota on the Account page).
+3. In a Bash console:
+   ```
+   cd ~/profit_engine_research
+   .venv/bin/profit-engine --db data/maker.db compact-books
+   .venv/bin/profit-engine --db data/research.db compact-books
+   ```
+   Each prints the size before and after. A few minutes each.
+4. Restart the always-on task.
+
+If it says the database is locked, the task is still running.
+
 ## Watching it
 
 - Task log (Tasks page -> log link): one line per cycle ending
