@@ -249,6 +249,28 @@ def cmd_maker_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_compact_books(args: argparse.Namespace) -> int:
+    """One-time: trim stored books to the top levels and give the space back. Stop the always-on task first."""
+    import sqlite3
+
+    def size(path: str) -> int:
+        return sum(Path(path + suffix).stat().st_size for suffix in ("", "-wal") if Path(path + suffix).exists())
+
+    before = size(args.db)
+    store = Store(args.db)
+    try:
+        changed = store.compact_books(args.levels)
+        print(f"{args.db}: trimmed {changed} stored books to {args.levels} levels per side; vacuuming...")
+        store.vacuum()
+    except sqlite3.OperationalError as exc:
+        print(f"{args.db}: {exc}. Stop the always-on task (it holds the database) and run this again.", file=sys.stderr)
+        return 1
+    finally:
+        store.close()
+    print(f"{args.db}: {before / 1e6:.0f} MB -> {size(args.db) / 1e6:.0f} MB")
+    return 0
+
+
 def cmd_score(args: argparse.Namespace) -> int:
     store = Store(args.db)
     try:
@@ -334,6 +356,10 @@ def parser() -> argparse.ArgumentParser:
     mrep = sub.add_parser("maker-report", help="paper market-maker results by event day, with intervals and v2 - v1")
     mrep.add_argument("--pair-from", help="first event day (YYYY-MM-DD) for the paired comparison (default: when both ran)")
     mrep.set_defaults(func=cmd_maker_report)
+
+    compact = sub.add_parser("compact-books", help="one-time: trim stored books to the top levels and reclaim space")
+    compact.add_argument("--levels", type=int, default=5, help="price levels kept per side (default 5)")
+    compact.set_defaults(func=cmd_compact_books)
 
     status = sub.add_parser("status", help="what is in the database")
     status.add_argument("--cash", default="1000", help="starting paper cash used when trading")

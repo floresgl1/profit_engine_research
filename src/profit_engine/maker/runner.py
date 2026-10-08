@@ -84,6 +84,7 @@ class MakerRunner:
         self.makers: dict[str, dict[str, MarketMaker]] = {s.name: {} for s in strategies}
         self._last_book: dict[str, tuple] = {}  # last recorded (bids, asks) per market
         self._last_fair: dict[str, Decimal] = {}
+        self._traded: set[str] = set()  # markets any strategy has filled in: they need a resolution
         started = now()
         for s in strategies:
             store.add_maker_run(s.name, started)
@@ -96,6 +97,7 @@ class MakerRunner:
     def _restore(self) -> None:
         for s in self.strategies:
             for _, _, fill in self.store.maker_fills(s.name):
+                self._traded.add(fill.market_id)
                 m = self._maker(s, fill.market_id)
                 m.cash += fill.cash
                 m.position += fill.position
@@ -123,9 +125,10 @@ class MakerRunner:
                 for _, maker in makers:
                     maker.stop()
                 continue
-            if self.config.record and self._last_book.get(ticker) != (book.bids, book.asks):
+            kept = self.store.stored_levels(book)
+            if self.config.record and self._last_book.get(ticker) != kept:
                 self.store.add_snapshot(book)
-                self._last_book[ticker] = (book.bids, book.asks)
+                self._last_book[ticker] = kept
             if self.config.record or any(maker.quotes for _, maker in makers):
                 trades = self._new_trades(ticker, now)
                 if self.config.record:
@@ -140,6 +143,7 @@ class MakerRunner:
             for strategy, maker in makers:
                 for fill in maker.step(book, trades, now, fair):
                     self.store.add_maker_fill(strategy.name, "kalshi", fill)
+                    self._traded.add(ticker)
                     fills.append(fill)
         return fills
 
@@ -181,8 +185,10 @@ class MakerRunner:
         self._record_resolutions()
 
     def _record_resolutions(self) -> None:
-        held = {t for makers in self.makers.values() for t, m in makers.items() if m.position != 0 and t not in self.open}
-        unresolved = [t for t in held if self.store.resolution("kalshi", t) is None]
+        # Every traded market, even one we ended flat in: the report only counts a day as
+        # settled once all its traded markets have a resolution.
+        closed = self._traded - set(self.open)
+        unresolved = sorted(t for t in closed if self.store.resolution("kalshi", t) is None)
         if not unresolved:
             return
         markets = list(self.source.fetch_markets(unresolved).values())
@@ -205,8 +211,8 @@ class MakerRunner:
                 for s in self.strategies:
                     makers = self.makers[s.name]
                     quoting = sum(1 for t in self.open if t in makers and makers[t].quotes)
-                    exposure = sum(abs(m.position) for m in makers.values())
-                    parts.append(f"{s.name}: {quoting} quoting, |position| {exposure}")
+                    exposure = sum(abs(makers[t].position) for t in self.open if t in makers)  # open markets only
+                    parts.append(f"{s.name}: {quoting} quoting, open |position| {exposure}")
                 log.info(
                     "maker tick %d: %d open markets, %d fills so far; %s; cpu %.3fs",
                     n, len(self.open), fills_total, "; ".join(parts), time.process_time() - cpu,

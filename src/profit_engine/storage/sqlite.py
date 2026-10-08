@@ -40,6 +40,12 @@ from profit_engine.maker.quoter import MakerFill
 
 SCHEMA_VERSION = 1
 
+# Price levels kept per side when a book is stored. Full depth made stored books
+# grow ~200 MB a day on 90 markets; scoring needs the touch, today's quoting
+# strategies join it, and paper fills capped at a fraction of visible depth only
+# get more conservative with less depth shown.
+BOOK_LEVELS = 5
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -220,8 +226,10 @@ class ScoredRow:
 
 
 class Store:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, book_levels: int | None = BOOK_LEVELS) -> None:
+        """`book_levels`: price levels kept per side in stored books (None = full depth)."""
         self.path = str(path)
+        self.book_levels = book_levels
         self._conn = sqlite3.connect(self.path)
         self._conn.execute("PRAGMA foreign_keys = ON")
         if self.path != ":memory:":
@@ -296,8 +304,14 @@ class Store:
 
     # --- books ----------------------------------------------------------------
 
+    def stored_levels(self, book: OrderBook) -> tuple[tuple[Level, ...], tuple[Level, ...]]:
+        """The part of `book` this store keeps: the best `book_levels` levels per side."""
+        n = self.book_levels
+        return (book.bids, book.asks) if n is None else (book.bids[:n], book.asks[:n])
+
     def add_snapshot(self, book: OrderBook) -> None:
-        bids, asks = _levels_json(book.bids), _levels_json(book.asks)
+        kept_bids, kept_asks = self.stored_levels(book)
+        bids, asks = _levels_json(kept_bids), _levels_json(kept_asks)
         digest = hashlib.sha256(f"{bids}|{asks}".encode()).hexdigest()
         with self._conn:
             self._conn.execute("INSERT OR IGNORE INTO book_states VALUES (?, ?, ?)", (digest, bids, asks))
@@ -305,6 +319,39 @@ class Store:
                 "INSERT INTO book_snapshots (venue, market_id, received_at, state_hash) VALUES (?, ?, ?, ?)",
                 (book.venue, book.market_id, ts(book.received_at), digest),
             )
+
+    def compact_books(self, levels: int, batch: int = 5000) -> int:
+        """Trim every stored book to its best `levels` per side, in place; returns rows changed.
+
+        Rows keep their key, so snapshots still point at them. Run `vacuum()`
+        afterwards to give the space back to the disk.
+        """
+        changed = 0
+        last = ""
+        while True:
+            rows = self._conn.execute(
+                "SELECT hash, bids, asks FROM book_states WHERE hash > ? ORDER BY hash LIMIT ?", (last, batch)
+            ).fetchall()
+            if not rows:
+                return changed
+            updates = []
+            for digest, bids, asks in rows:
+                b, a = json.loads(bids), json.loads(asks)
+                if len(b) > levels or len(a) > levels:
+                    updates.append((json.dumps(b[:levels], separators=(",", ":")),
+                                    json.dumps(a[:levels], separators=(",", ":")), digest))  # fmt: skip
+            with self._conn:
+                self._conn.executemany("UPDATE book_states SET bids = ?, asks = ? WHERE hash = ?", updates)
+            changed += len(updates)
+            last = rows[-1][0]
+
+    def vacuum(self) -> None:
+        """Rewrite the file to release freed pages (needs free disk about the file's size, and no other writer)."""
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self._conn.execute("VACUUM")
+        # In WAL mode VACUUM writes the compacted copy to the WAL; the main file only
+        # shrinks once that is checkpointed back.
+        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
     def book_at_or_after(self, venue: str, market_id: str, when: datetime) -> OrderBook | None:
         row = self._conn.execute(
