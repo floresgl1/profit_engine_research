@@ -16,13 +16,19 @@ above fair + m, no ask below fair - m). research/maker_rules.md chose
 m = 20c on the discovery half of 628k historical maker fills; on the holdout
 it raised total maker PnL by 29%. Without a model price (the model abstains,
 or no model), v2 quotes like v1.
+
+v3 (inventory skew, replay-only so far) changes only the side that would add
+to the position: its size shrinks with the position (skew_size) and, from
+half the limit on, it quotes one tick behind the best price (skew_back). A
+resting quote whose wanted size drops shrinks in place and keeps its queue
+place; no quote grows back without re-posting (as in v1).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_FLOOR, Decimal
 
 from profit_engine.core import OrderBook
 from profit_engine.maker.queue import PublicTrade, RestingQuote, match, refresh_queue
@@ -30,6 +36,7 @@ from profit_engine.maker.queue import PublicTrade, RestingQuote, match, refresh_
 # Kalshi doesn't document maker fees on these series; charge the higher
 # rate it uses where makers pay, so results err against us.
 DEFAULT_MAKER_FEE_RATE = Decimal("0.0175")
+TICK = Decimal("0.01")
 
 
 @dataclass(frozen=True)
@@ -38,6 +45,9 @@ class QuoterConfig:
     max_position: Decimal = Decimal(50)
     maker_fee_rate: Decimal = DEFAULT_MAKER_FEE_RATE
     model_margin: Decimal | None = None  # v2: veto quotes the model puts more than this against us
+    # v3, inventory skew. On the side that would add to the position:
+    skew_size: bool = False  # quote size x (1 - |position| / max_position), whole contracts (0 at the limit)
+    skew_back: bool = False  # and from half the limit on, quote one tick behind the best price
 
     def __post_init__(self) -> None:
         if self.size <= 0 or self.max_position < self.size:
@@ -116,6 +126,23 @@ class MarketMaker:
             return False
         return price > fair + m if side == "bid" else price < fair - m
 
+    def _adds(self, side: str) -> bool:
+        """Would a fill on this side grow |position|?"""
+        return self.position > 0 if side == "bid" else self.position < 0
+
+    def _skewed(self, side: str, size: Decimal, target: Decimal) -> tuple[Decimal, Decimal | None]:
+        """v3: smaller and/or one tick worse on the side that adds to the position. None price = don't quote."""
+        if not self._adds(side):
+            return size, target
+        filled = abs(self.position) / self.config.max_position
+        if self.config.skew_size:
+            size = min(size, (self.config.size * (1 - filled)).to_integral_value(rounding=ROUND_FLOOR))
+        if self.config.skew_back and filled >= Decimal("0.5"):
+            target = target - TICK if side == "bid" else target + TICK
+            if not TICK <= target <= 1 - TICK:
+                return size, None
+        return size, target
+
     def _requote(self, book: OrderBook, now: datetime, fair: Decimal | None = None) -> None:
         best = {"bid": book.best_bid, "ask": book.best_ask}
         if best["bid"] is None or best["ask"] is None:
@@ -123,13 +150,18 @@ class MarketMaker:
             return
         for side in ("bid", "ask"):
             room = self.config.max_position - (self.position if side == "bid" else -self.position)
-            size = min(self.config.size, room)
-            target = best[side].price
+            size, target = self._skewed(side, min(self.config.size, room), best[side].price)
+            if target is None:
+                self.quotes.pop(side, None)
+                continue
             current = self.quotes.get(side)
             if size <= 0 or self._vetoed(side, target, fair):
                 self.quotes.pop(side, None)
             elif current is not None and current.price == target:
-                self.quotes[side] = refresh_queue(current, visible_size(book, side, target))
+                # Same price: keep the queue place. A smaller wanted size shrinks the quote in
+                # place (a size cut keeps priority); it never grows back without re-posting.
+                kept = replace(current, size=min(current.size, size))
+                self.quotes[side] = refresh_queue(kept, visible_size(book, side, target))
             else:
                 # New quote, or the best price moved: re-post behind everything showing there.
                 self.quotes[side] = RestingQuote(side, target, size, visible_size(book, side, target), now)

@@ -178,16 +178,21 @@ def run_maker(db: str, series: list[str], interval: float, cycles: int | None = 
     Both strategies see the same books and trades every tick. Opens its own
     database connection.
     """
-    from profit_engine.maker.quoter import QuoterConfig
     from profit_engine.maker.runner import MakerRunner, RunnerConfig, Strategy
 
     Path(db).parent.mkdir(parents=True, exist_ok=True)
     store = Store(db)
-    base = QuoterConfig(size=Decimal(size), max_position=Decimal(max_position), maker_fee_rate=Decimal(maker_fee))
-    strategies = [
-        Strategy("join_touch_v1", base),
-        Strategy("model_veto_v2", QuoterConfig(base.size, base.max_position, base.maker_fee_rate, Decimal(model_margin))),
-    ]
+    from dataclasses import replace
+
+    from profit_engine.maker.strategies import LIVE, STRATEGIES
+
+    overrides = {"size": Decimal(size), "max_position": Decimal(max_position), "maker_fee_rate": Decimal(maker_fee)}
+    strategies = []
+    for name in LIVE:
+        quoter = replace(STRATEGIES[name].quoter, **overrides)
+        if quoter.model_margin is not None:
+            quoter = replace(quoter, model_margin=Decimal(model_margin))
+        strategies.append(Strategy(name, quoter))
     runner = MakerRunner(
         KalshiSource(ReadOnlyHttp(KALSHI_URL), series),
         store,
@@ -244,6 +249,53 @@ def cmd_maker_report(args: argparse.Namespace) -> int:
 
         pair_from = date.fromisoformat(args.pair_from) if args.pair_from else None
         print(render(by_strategy, resolutions, mark, store.maker_runs(), pair_from=pair_from))
+    finally:
+        store.close()
+    return 0
+
+
+def cmd_replay(args: argparse.Namespace) -> int:
+    """Replay strategies on the maker's recording and compare them (v1 baseline) on identical data."""
+    from datetime import datetime, timezone
+
+    from profit_engine.core import midpoint
+    from profit_engine.maker.replay import fidelity, replay
+    from profit_engine.maker.report import covered_from, render
+    from profit_engine.maker.strategies import STRATEGIES
+
+    names = [n.strip() for n in args.strategies.split(",") if n.strip()]
+    unknown = [n for n in names if n not in STRATEGIES]
+    if unknown:
+        print(f"unknown strategies {unknown}; known: {sorted(STRATEGIES)}", file=sys.stderr)
+        return 2
+    if "join_touch_v1" not in names:
+        names.insert(0, "join_touch_v1")  # the baseline every other strategy is paired against
+
+    def day_start(text: str | None):
+        return datetime.fromisoformat(text).replace(tzinfo=timezone.utc) if text else None
+
+    store = Store(args.db)
+    try:
+        ticks = store.maker_ticks()
+        if not ticks:
+            print("Nothing recorded yet.")
+            return 0
+        start, end = day_start(args.start) or ticks[0], day_start(args.end) or ticks[-1] + timedelta(seconds=1)
+        fills = replay(store, [STRATEGIES[n] for n in names], start, end)
+        resolutions = {r.market_id: r.yes_value for r in store.resolutions() if r.venue == "kalshi"}
+
+        def mark(ticker: str):
+            book = store.latest_book("kalshi", ticker)
+            return midpoint(book) if book else None
+
+        print(f"replay {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC, {sum(1 for t in ticks if start <= t < end)} ticks")
+        print(render(fills, resolutions, mark, {}, pair_from=covered_from(start)))
+        live = [f for _, _, f in store.maker_fills("join_touch_v1")]
+        rows = fidelity(live, fills["join_touch_v1"], start, end)
+        if rows:
+            print("[fidelity: join_touch_v1 contracts, live vs replay]")
+            for r in rows:
+                print(f"  {r.day}  live {r.live_contracts:.0f}  replay {r.replay_contracts:.0f}")
     finally:
         store.close()
     return 0
@@ -356,6 +408,13 @@ def parser() -> argparse.ArgumentParser:
     mrep = sub.add_parser("maker-report", help="paper market-maker results by event day, with intervals and v2 - v1")
     mrep.add_argument("--pair-from", help="first event day (YYYY-MM-DD) for the paired comparison (default: when both ran)")
     mrep.set_defaults(func=cmd_maker_report)
+
+    rep = sub.add_parser("replay", help="replay maker strategies on the recorded data, paired against v1")
+    rep.add_argument("--strategies", default="join_touch_v1,model_veto_v2,skew_size_v3a,skew_back_v3b",
+                     help="comma-separated names from profit_engine.maker.strategies")
+    rep.add_argument("--start", help="first UTC date to replay (YYYY-MM-DD; default: first recorded tick)")
+    rep.add_argument("--end", help="UTC date to stop before (YYYY-MM-DD; default: after the last tick)")
+    rep.set_defaults(func=cmd_replay)
 
     compact = sub.add_parser("compact-books", help="one-time: trim stored books to the top levels and reclaim space")
     compact.add_argument("--levels", type=int, default=5, help="price levels kept per side (default 5)")
