@@ -179,6 +179,11 @@ cd ~/profit_engine_research
 .venv/bin/profit-engine --db data/maker.db replay --strategies skew_back_v3b --start 2026-10-09
 ```
 
+`--breakdown` also splits each strategy's settled PnL by session (day
+before, 00-10, 10-14, 14-18, 18-close local) and by how the fill happened
+(our turn in the queue vs a trade printing through our price), with the
+number of days each slice was positive.
+
 About 11 CPU-seconds per recorded day. Days recorded before 2026-10-08 replay
 approximately (trades weren't tagged with the tick that delivered them, and
 "no model price" wasn't recorded); later days reproduce live fills exactly.

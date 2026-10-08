@@ -178,3 +178,54 @@ def test_live_strategies_unchanged_by_the_registry():
     assert STRATEGIES["model_veto_v2"].quoter == QuoterConfig(model_margin=D("0.20"))
     assert isinstance(MarketMaker("M", STRATEGIES["skew_back_v3b"].quoter), MarketMaker)
     assert Strategy("x", QuoterConfig()).name == "x"
+
+
+def test_swept_vs_queue_contracts():
+    from profit_engine.maker.queue import RestingQuote, match_detail
+
+    q = RestingQuote("bid", D("0.40"), D(10), queue_ahead=D(5), posted_at=T0)
+    trades = [PublicTrade("a", T0 + TICK, D("0.40"), D(8), False),   # 5 ahead, 3 to us (queue)
+              PublicTrade("b", T0 + 2 * TICK, D("0.38"), D(1), False)]  # sweeps the remaining 7
+    filled, swept, left = match_detail(q, trades)
+    assert (filled, swept, left.size) == (D(10), D(7), D(0))
+
+
+def test_session_of_new_york_times():
+    from profit_engine.maker.replay import session_of
+
+    def at(day, hour):  # EDT = UTC-4
+        return MakerFill("KXHIGHNY-26OCT09-B68.5", "bid", D("0.4"), D(1), D(0),
+                         datetime(2026, 10, day, hour + 4, tzinfo=timezone.utc) if hour + 4 < 24 else
+                         datetime(2026, 10, day + 1, hour + 4 - 24, tzinfo=timezone.utc))
+    assert [session_of(at(8, 22)), session_of(at(9, 9)), session_of(at(9, 10)),
+            session_of(at(9, 15)), session_of(at(9, 23))] == SESSIONS_EXPECTED
+
+
+SESSIONS_EXPECTED = ["day before", "D 00-10", "D 10-14", "D 14-18", "D 18-close"]
+
+
+def test_breakdown_hand_computed():
+    from profit_engine.maker.replay import breakdown, render_breakdown
+
+    afternoon = datetime(2026, 10, 9, 19, tzinfo=timezone.utc)  # 15:00 EDT
+    m = "KXHIGHNY-26OCT09-B68.5"  # settles NO
+    fills = [
+        # bought 10 YES at 0.40, 4 of them swept: loses 4.00 + fee 0.10 -> queue 6 lose 2.46, swept 4 lose 1.64
+        MakerFill(m, "bid", D("0.40"), D(10), D("0.10"), afternoon, D(4)),
+        # sold 5 YES at 0.30 from the queue: wins 1.50
+        MakerFill(m, "ask", D("0.30"), D(5), D(0), afternoon),
+    ]
+    rows = {(r.session, r.kind): r for r in breakdown(fills, {m: D(0)})}
+    assert (rows[("D 14-18", "queue")].contracts, rows[("D 14-18", "queue")].pnl) == (D(11), D("-2.46") + D("1.50"))
+    assert (rows[("D 14-18", "swept")].contracts, rows[("D 14-18", "swept")].pnl) == (D(4), D("-1.64"))
+    assert rows[("D 14-18", "swept")].days_positive == 0 and rows[("D 14-18", "swept")].days == 1
+    assert breakdown(fills, {}) == []  # unsettled markets are left out
+    out = render_breakdown("v1", list(rows.values()))
+    assert "D 14-18" in out and "all" in out
+
+
+def test_replay_cli_breakdown(tmp_path, capsys):
+    store = live_run(tmp_path, [STRATEGIES["join_touch_v1"]], ticks=60)
+    store.close()
+    assert cli.main(["--db", str(tmp_path / "live.db"), "replay", "--strategies", "join_touch_v1", "--breakdown"]) == 0
+    assert "[breakdown join_touch_v1" in capsys.readouterr().out

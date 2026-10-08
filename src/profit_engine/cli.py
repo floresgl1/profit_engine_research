@@ -259,7 +259,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
     from datetime import datetime, timezone
 
     from profit_engine.core import midpoint
-    from profit_engine.maker.replay import fidelity, replay
+    from profit_engine.maker.replay import breakdown, fidelity, render_breakdown, replay
     from profit_engine.maker.report import covered_from, render
     from profit_engine.maker.strategies import STRATEGIES
 
@@ -290,6 +290,9 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
         print(f"replay {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC, {sum(1 for t in ticks if start <= t < end)} ticks")
         print(render(fills, resolutions, mark, {}, pair_from=covered_from(start)))
+        if args.breakdown:
+            for name in names:
+                print(render_breakdown(name, breakdown(fills[name], resolutions)))
         live = [f for _, _, f in store.maker_fills("join_touch_v1")]
         rows = fidelity(live, fills["join_touch_v1"], start, end)
         if rows:
@@ -414,6 +417,8 @@ def parser() -> argparse.ArgumentParser:
                      help="comma-separated names from profit_engine.maker.strategies")
     rep.add_argument("--start", help="first UTC date to replay (YYYY-MM-DD; default: first recorded tick)")
     rep.add_argument("--end", help="UTC date to stop before (YYYY-MM-DD; default: after the last tick)")
+    rep.add_argument("--breakdown", action="store_true",
+                     help="also split settled PnL by session and by queue vs swept fills")
     rep.set_defaults(func=cmd_replay)
 
     compact = sub.add_parser("compact-books", help="one-time: trim stored books to the top levels and reclaim space")

@@ -149,3 +149,80 @@ def fidelity(live: list[MakerFill], replayed: list[MakerFill], start: datetime, 
 
     lv, rp = per_day(live), per_day(replayed)
     return [DayFidelity(d, lv.get(d, Decimal(0)), rp.get(d, Decimal(0))) for d in sorted(set(lv) | set(rp))]
+
+
+# --- where the PnL comes from ------------------------------------------------------------------
+
+SESSIONS = ["day before", "D 00-10", "D 10-14", "D 14-18", "D 18-close"]
+
+
+def session_of(fill: MakerFill) -> str | None:
+    """Session of a fill in the event city's local time, relative to the event day."""
+    from profit_engine.weather.stations import CITIES
+
+    day = event_day_of(fill.market_id)
+    city = CITIES.get(fill.market_id.split("-", 1)[0])
+    if day is None or city is None:
+        return None
+    local = fill.at.astimezone(city.zone)
+    if local.date() < day:
+        return "day before"
+    if local.hour < 10:
+        return "D 00-10"
+    if local.hour < 14:
+        return "D 10-14"
+    if local.hour < 18:
+        return "D 14-18"
+    return "D 18-close"
+
+
+@dataclass(frozen=True)
+class Slice:
+    session: str
+    kind: str  # "queue" (our turn came) or "swept" (a trade printed through our price)
+    contracts: Decimal
+    pnl: Decimal  # held to settlement, after the maker fee
+    days_positive: int
+    days: int
+
+    @property
+    def per_contract_cents(self) -> Decimal:
+        return 100 * self.pnl / self.contracts if self.contracts else Decimal(0)
+
+
+def breakdown(fills: list[MakerFill], resolutions: dict[str, Decimal]) -> list[Slice]:
+    """Settled fills split by session and by how they filled; PnL shared pro rata within a fill."""
+    acc: dict[tuple[str, str], dict[date, list[Decimal]]] = {}
+    for f in fills:
+        value = resolutions.get(f.market_id)
+        session, day = session_of(f), event_day_of(f.market_id)
+        if value is None or session is None or day is None or f.quantity == 0:
+            continue
+        sign = 1 if f.side == "bid" else -1
+        pnl = sign * (value - f.price) * f.quantity - f.fee
+        for kind, qty in (("swept", f.swept), ("queue", f.quantity - f.swept)):
+            if qty:
+                cell = acc.setdefault((session, kind), {}).setdefault(day, [Decimal(0), Decimal(0)])
+                cell[0] += qty
+                cell[1] += pnl * qty / f.quantity
+    out = []
+    for session in SESSIONS:
+        for kind in ("queue", "swept"):
+            days = acc.get((session, kind), {})
+            if days:
+                out.append(Slice(session, kind, sum((c for c, _ in days.values()), Decimal(0)),
+                                 sum((p for _, p in days.values()), Decimal(0)),
+                                 sum(1 for _, p in days.values() if p > 0), len(days)))  # fmt: skip
+    return out
+
+
+def render_breakdown(name: str, slices: list[Slice]) -> str:
+    lines = [f"[breakdown {name}: settled fills; contracts, PnL per contract, total, days positive]"]
+    for s in slices:
+        lines.append(f"  {s.session:<10} {s.kind:<5} {s.contracts:>7.0f}  {s.per_contract_cents:+6.2f}c  "
+                     f"{s.pnl:+8.2f}  {s.days_positive}/{s.days}")  # fmt: skip
+    total_c = sum((s.contracts for s in slices), Decimal(0))
+    total_p = sum((s.pnl for s in slices), Decimal(0))
+    if total_c:
+        lines.append(f"  {'all':<16} {total_c:>7.0f}  {100 * total_p / total_c:+6.2f}c  {total_p:+8.2f}")
+    return "\n".join(lines)
