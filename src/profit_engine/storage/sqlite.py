@@ -149,7 +149,8 @@ CREATE TABLE IF NOT EXISTS maker_trades (
     at TEXT NOT NULL,
     yes_price TEXT NOT NULL,
     count TEXT NOT NULL,
-    taker_yes INTEGER NOT NULL
+    taker_yes INTEGER NOT NULL,
+    tick_at TEXT  -- the maker tick that delivered it (NULL for trades recorded before 2026-10-08)
 );
 CREATE INDEX IF NOT EXISTS maker_trades_market ON maker_trades (market_id, at);
 
@@ -157,7 +158,7 @@ CREATE TABLE IF NOT EXISTS maker_fair (
     id INTEGER PRIMARY KEY,
     market_id TEXT NOT NULL,
     at TEXT NOT NULL,
-    fair TEXT NOT NULL
+    fair TEXT NOT NULL  -- '' = no model price from then on (recorded from 2026-10-08)
 );
 CREATE INDEX IF NOT EXISTS maker_fair_market ON maker_fair (market_id, at);
 
@@ -241,6 +242,10 @@ class Store:
                 self._conn.execute("INSERT INTO schema_version VALUES (?)", (SCHEMA_VERSION,))
             elif row[0] != SCHEMA_VERSION:
                 raise RuntimeError(f"database schema v{row[0]}, code expects v{SCHEMA_VERSION}")
+            # Additive column for databases created before it existed.
+            columns = {r[1] for r in self._conn.execute("PRAGMA table_info(maker_trades)")}
+            if "tick_at" not in columns:
+                self._conn.execute("ALTER TABLE maker_trades ADD COLUMN tick_at TEXT")
 
     def close(self) -> None:
         self._conn.close()
@@ -570,11 +575,16 @@ class Store:
             for r in rows
         ]
 
-    def add_maker_trades(self, market_id: str, trades: Iterable[PublicTrade]) -> None:
-        rows = [(t.trade_id, market_id, ts(t.at), str(t.yes_price), str(t.count), int(t.taker_yes)) for t in trades]
+    def add_maker_trades(self, market_id: str, trades: Iterable[PublicTrade], tick_at: datetime | None = None) -> None:
+        tick = ts(tick_at) if tick_at else None
+        rows = [(t.trade_id, market_id, ts(t.at), str(t.yes_price), str(t.count), int(t.taker_yes), tick) for t in trades]
         if rows:
             with self._conn:
-                self._conn.executemany("INSERT OR IGNORE INTO maker_trades VALUES (?, ?, ?, ?, ?, ?)", rows)
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO maker_trades (trade_id, market_id, at, yes_price, count, taker_yes, tick_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    rows,
+                )
 
     def maker_trades(self, market_id: str) -> list[PublicTrade]:
         rows = self._conn.execute(
@@ -583,13 +593,27 @@ class Store:
         )
         return [PublicTrade(r[0], from_ts(r[1]), Decimal(r[2]), Decimal(r[3]), bool(r[4])) for r in rows]
 
-    def add_maker_fair(self, market_id: str, at: datetime, fair: Decimal) -> None:
-        with self._conn:
-            self._conn.execute("INSERT INTO maker_fair (market_id, at, fair) VALUES (?, ?, ?)", (market_id, ts(at), str(fair)))
+    def maker_trade_ticks(self, market_id: str) -> list[tuple[PublicTrade, datetime | None]]:
+        """Recorded trades with the tick that delivered each (None before that was recorded)."""
+        rows = self._conn.execute(
+            "SELECT trade_id, at, yes_price, count, taker_yes, tick_at FROM maker_trades WHERE market_id = ?"
+            " ORDER BY at, trade_id",
+            (market_id,),
+        )
+        return [
+            (PublicTrade(r[0], from_ts(r[1]), Decimal(r[2]), Decimal(r[3]), bool(r[4])), from_ts(r[5]) if r[5] else None)
+            for r in rows
+        ]
 
-    def maker_fair(self, market_id: str) -> list[tuple[datetime, Decimal]]:
+    def add_maker_fair(self, market_id: str, at: datetime, fair: Decimal | None) -> None:
+        """A model price from `at` on; None records that there was no model price from then on."""
+        value = "" if fair is None else str(fair)
+        with self._conn:
+            self._conn.execute("INSERT INTO maker_fair (market_id, at, fair) VALUES (?, ?, ?)", (market_id, ts(at), value))
+
+    def maker_fair(self, market_id: str) -> list[tuple[datetime, Decimal | None]]:
         rows = self._conn.execute("SELECT at, fair FROM maker_fair WHERE market_id = ? ORDER BY at, id", (market_id,))
-        return [(from_ts(r[0]), Decimal(r[1])) for r in rows]
+        return [(from_ts(r[0]), Decimal(r[1]) if r[1] else None) for r in rows]
 
     def add_maker_tick(self, at: datetime) -> None:
         with self._conn:

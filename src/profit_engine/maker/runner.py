@@ -41,6 +41,7 @@ from profit_engine.storage import Store
 
 log = logging.getLogger(__name__)
 
+_UNSET = object()  # no model price recorded yet for a market
 OVERLAP = timedelta(seconds=2)  # re-read this much before the last tick; ids de-duplicate
 
 
@@ -83,7 +84,7 @@ class MakerRunner:
         self._needs_fair = any(s.quoter.model_margin is not None for s in strategies)
         self.makers: dict[str, dict[str, MarketMaker]] = {s.name: {} for s in strategies}
         self._last_book: dict[str, tuple] = {}  # last recorded (bids, asks) per market
-        self._last_fair: dict[str, Decimal] = {}
+        self._last_fair: dict[str, Decimal | None] = {}
         self._traded: set[str] = set()  # markets any strategy has filled in: they need a resolution
         started = now()
         for s in strategies:
@@ -132,13 +133,13 @@ class MakerRunner:
             if self.config.record or any(maker.quotes for _, maker in makers):
                 trades = self._new_trades(ticker, now)
                 if self.config.record:
-                    self.store.add_maker_trades(ticker, trades)
+                    self.store.add_maker_trades(ticker, trades, tick_at=now)
             else:  # nothing resting can fill: skip the request, start reading trades from now
                 self._since[ticker] = now
                 trades = []
             fair = self._fair_price(market, book)
-            if self.config.record and fair is not None and self._last_fair.get(ticker) != fair:
-                self.store.add_maker_fair(ticker, now, fair)
+            if self.config.record and self._needs_fair and self._last_fair.get(ticker, _UNSET) != fair:
+                self.store.add_maker_fair(ticker, now, fair)  # None too: replay must know the price went away
                 self._last_fair[ticker] = fair
             for strategy, maker in makers:
                 for fill in maker.step(book, trades, now, fair):
@@ -186,8 +187,10 @@ class MakerRunner:
 
     def _record_resolutions(self) -> None:
         # Every traded market, even one we ended flat in: the report only counts a day as
-        # settled once all its traded markets have a resolution.
-        closed = self._traded - set(self.open)
+        # settled once all its traded markets have a resolution. When recording, every
+        # market seen too, so replayed strategies trading other markets can be settled.
+        seen = {m.market_id for m in self.store.markets("kalshi")} if self.config.record else set()
+        closed = (self._traded | seen) - set(self.open)
         unresolved = sorted(t for t in closed if self.store.resolution("kalshi", t) is None)
         if not unresolved:
             return

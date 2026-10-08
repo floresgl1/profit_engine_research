@@ -166,6 +166,23 @@ To trim the books already stored and give the space back:
 
 If it says the database is locked, the task is still running.
 
+## Replaying strategies on the recording
+
+`replay` runs any strategy from `src/profit_engine/maker/strategies.py` on
+what the live maker recorded and compares it with v1 on identical data
+(paired by event day), then checks the simulator: replayed v1 contracts vs
+live v1 contracts per day.
+
+```
+cd ~/profit_engine_research
+.venv/bin/profit-engine --db data/maker.db replay
+.venv/bin/profit-engine --db data/maker.db replay --strategies skew_back_v3b --start 2026-10-09
+```
+
+About 11 CPU-seconds per recorded day. Days recorded before 2026-10-08 replay
+approximately (trades weren't tagged with the tick that delivered them, and
+"no model price" wasn't recorded); later days reproduce live fills exactly.
+
 ## Watching it
 
 - Task log (Tasks page -> log link): one line per cycle ending
