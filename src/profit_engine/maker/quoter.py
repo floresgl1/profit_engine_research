@@ -31,7 +31,7 @@ from datetime import datetime
 from decimal import ROUND_FLOOR, Decimal
 
 from profit_engine.core import OrderBook
-from profit_engine.maker.queue import PublicTrade, RestingQuote, match, refresh_queue
+from profit_engine.maker.queue import PublicTrade, RestingQuote, match_detail, refresh_queue
 
 # Kalshi doesn't document maker fees on these series; charge the higher
 # rate it uses where makers pay, so results err against us.
@@ -64,6 +64,9 @@ class MakerFill:
     quantity: Decimal
     fee: Decimal
     at: datetime  # when we observed it (the trade's time is within the last tick)
+    # Contracts of this fill that came from a trade printing through our price (the level was
+    # swept) rather than our turn in the queue. For analysis only: not stored, not compared.
+    swept: Decimal = field(default=Decimal(0), compare=False)
 
     @property
     def cash(self) -> Decimal:
@@ -107,10 +110,10 @@ class MarketMaker:
         fills = []
         ordered = sorted(trades, key=lambda t: t.at)
         for side, quote in list(self.quotes.items()):
-            filled, left = match(quote, ordered)
+            filled, swept, left = match_detail(quote, ordered)
             if filled:
                 fee = maker_fee(quote.price, filled, self.config.maker_fee_rate)
-                fill = MakerFill(self.market_id, side, quote.price, filled, fee, now)
+                fill = MakerFill(self.market_id, side, quote.price, filled, fee, now, swept)
                 fills.append(fill)
                 self.cash += fill.cash
                 self.position += fill.position

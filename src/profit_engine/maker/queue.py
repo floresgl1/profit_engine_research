@@ -61,7 +61,13 @@ def through(quote: RestingQuote, trade: PublicTrade) -> bool:
 
 def match(quote: RestingQuote, trades: list[PublicTrade]) -> tuple[Decimal, RestingQuote]:
     """Contracts filled by `trades` (time order) and the quote left afterwards."""
-    filled = Decimal(0)
+    filled, _, q = match_detail(quote, trades)
+    return filled, q
+
+
+def match_detail(quote: RestingQuote, trades: list[PublicTrade]) -> tuple[Decimal, Decimal, RestingQuote]:
+    """Like `match`, also returning how many of the filled contracts came from trades through our price."""
+    filled = swept = Decimal(0)
     q = quote
     for t in trades:
         if q.size == 0:
@@ -70,6 +76,7 @@ def match(quote: RestingQuote, trades: list[PublicTrade]) -> tuple[Decimal, Rest
             continue
         if through(q, t):
             filled += q.size
+            swept += q.size
             q = replace(q, size=Decimal(0), queue_ahead=Decimal(0))
         elif t.yes_price == q.price:
             reaches_us = t.count - q.queue_ahead
@@ -79,7 +86,7 @@ def match(quote: RestingQuote, trades: list[PublicTrade]) -> tuple[Decimal, Rest
                 q = replace(q, size=q.size - take, queue_ahead=Decimal(0))
             else:
                 q = replace(q, queue_ahead=q.queue_ahead - t.count)
-    return filled, q
+    return filled, swept, q
 
 
 def refresh_queue(quote: RestingQuote, visible_at_price: Decimal) -> RestingQuote:
