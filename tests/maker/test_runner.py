@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 
@@ -6,7 +7,7 @@ from factories import make_market
 from profit_engine.core import Level, OrderBook, Resolution
 from profit_engine.maker.queue import PublicTrade
 from profit_engine.maker.quoter import MakerFill, QuoterConfig
-from profit_engine.maker.runner import MakerRunner, RunnerConfig, Strategy
+from profit_engine.maker.runner import OVERLAP, MakerRunner, RunnerConfig, Strategy
 from profit_engine.storage import Store
 from profit_engine.venues.kalshi.adapter import parse_trade
 
@@ -65,7 +66,7 @@ def test_fills_once_per_trade_and_survive_restart(tmp_path):
     assert [f.quantity for f in r.tick()] == [D(3)]
     clock.t = at(20)
     assert r.tick() == []  # re-read with overlap, de-duplicated by id
-    assert src.calls[-1] == at(10) - timedelta(seconds=2)
+    assert src.calls[-1] == at(10) - OVERLAP
     again = runner(src, store, clock)  # restart: position and cash rebuilt from the store
     assert again.makers["v1"]["M"].position == D(-3) and again.makers["v1"]["M"].cash == D("1.32")
 
@@ -219,3 +220,18 @@ def test_tick_log_counts_open_markets_only(tmp_path, caplog):
     with caplog.at_level(logging.INFO):
         r.run_forever(cycles=1)
     assert "v1: 1 quoting, open |position| 0" in caplog.text
+    assert re.search(r"1 ticks \d+\.\ds apart, cpu \d+\.\d{3}s per tick", caplog.text)  # the real pace
+
+
+def test_late_published_trade_is_read_at_two_second_ticks(tmp_path):
+    # A trade printed at t=1 that the venue only shows from t=7 (6 s late) is still read, once.
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    src.fetch_trades = lambda ticker, since: [t for t in late if t.at >= since and clock.t >= at(7)]
+    late = [PublicTrade("a", at(1), D("0.44"), D(8), True)]  # 5 ahead on the ask, 3 to us
+    r = runner(src, store, clock)
+    fills = []
+    for s in range(0, 13, 2):
+        clock.t = at(s)
+        fills += r.tick()
+    assert [(f.quantity, f.at) for f in fills] == [(D(3), at(8))]
+    assert [tick for _, tick in store.maker_trade_ticks("M")] == [at(8)]

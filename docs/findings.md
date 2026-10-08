@@ -43,10 +43,10 @@ Paper only throughout: no orders, no credentials, public GET endpoints only
 One of these, none available within this project's rules:
 - **Information the crowd lacks** (not public forecasts or readings).
 - **Speed**: Kalshi's real-time feed needs an API key, which the
-  no-credentials rule forbids. Faster polling is possible (2-second ticks
-  would cost roughly 1,000-1,500 CPU-seconds a day, inside the 5,000 a day
-  shared with finance_bot) but untested: if the traders who sweep stale
-  quotes react in under a second, 2 seconds is still too slow.
+  no-credentials rule forbids. Faster polling is possible and being tested
+  (from 2026-10-08 the live maker ticks every 2 seconds, and replay runs
+  the same strategies at 10 seconds on the same data): if the traders who
+  sweep stale quotes react in under a second, 2 seconds is still too slow.
 - **A market where liquidity providers are scarce but takers aren't**:
   Polymarket's new markets have empty books, but also few takers.
 
@@ -63,10 +63,12 @@ negative results can be trusted:
 ## Still running
 
 - Logger: seven cities' books and model predictions every minute.
-- Paper market makers v1 and v2 on NYC, to the agreed stop rule: after 10
-  settled paired days, retire both if their 95% intervals of mean daily PnL
-  are entirely below zero (`docs/decisions.md`).
-- Recording for replay (exact from 2026-10-09).
+- Paper market makers v1 and v2 on NYC, now at 2-second ticks, to the agreed
+  stop rule applied from the switch: after 10 settled days, retire both if
+  their 95% intervals of mean daily PnL are entirely below zero
+  (`docs/decisions.md`).
+- Recording for replay (exact from 2026-10-09), which also gives the
+  10-second makers on the same days (`replay --every 1,5`).
 
 ## Open follow-up
 

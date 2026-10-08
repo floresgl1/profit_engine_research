@@ -18,6 +18,12 @@ of more than RESTART_GAP between ticks means the live engine was down:
 resting quotes are dropped (live quotes didn't survive a restart either),
 positions are kept.
 
+`every=N` replays a slower poller on the same data: only every Nth recorded
+tick is used, and the trades the skipped ticks delivered arrive at the next
+tick used (a slower poller would have read them then). Books and model
+prices are read as of the ticks used. Recorded at 2-second ticks, every=5 is
+a 10-second maker on the same market activity.
+
 Compare strategies with each other *under replay*, not with live fills;
 `fidelity` reports how closely replayed v1 matches live v1 as a check on the
 simulator.
@@ -46,7 +52,8 @@ class _Market:
     close: datetime | None
     book_times: list[datetime]
     books: list
-    trades_by_tick: dict[datetime, list[PublicTrade]]
+    tagged_ticks: list[datetime]  # the tick that delivered each of `tagged`, in order
+    tagged: list[PublicTrade]
     untagged: list[PublicTrade]  # trades without a recorded delivering tick, by time
     untagged_times: list[datetime]
     fair_times: list[datetime]
@@ -57,7 +64,9 @@ class _Market:
         return self.books[i] if i >= 0 else None
 
     def trades_for(self, prev: datetime | None, t: datetime) -> list[PublicTrade]:
-        out = list(self.trades_by_tick.get(t, []))
+        """Trades delivered by ticks in (prev, t]; only those of tick t itself after a (re)start."""
+        lo = bisect.bisect_left(self.tagged_ticks, t) if prev is None else bisect.bisect_right(self.tagged_ticks, prev)
+        out = self.tagged[lo:bisect.bisect_right(self.tagged_ticks, t)]
         if prev is not None:
             lo = bisect.bisect_right(self.untagged_times, prev)
             hi = bisect.bisect_right(self.untagged_times, t)
@@ -75,26 +84,30 @@ def _load(store: Store) -> list[_Market]:
         books = list(store.books("kalshi", m.market_id))
         if not books:
             continue
-        by_tick: dict[datetime, list[PublicTrade]] = {}
+        tagged: list[tuple[datetime, PublicTrade]] = []
         untagged = []
         for trade, tick in store.maker_trade_ticks(m.market_id):
             if tick is None:
                 untagged.append(trade)
             else:
-                by_tick.setdefault(tick, []).append(trade)
+                tagged.append((tick, trade))
+        tagged.sort(key=lambda x: x[0])  # stable: trades keep their order within a tick
         fair = store.maker_fair(m.market_id)
         out.append(_Market(
-            m.market_id, m.close_time, [b.received_at for b in books], books, by_tick,
+            m.market_id, m.close_time, [b.received_at for b in books], books,
+            [tick for tick, _ in tagged], [trade for _, trade in tagged],
             untagged, [t.at for t in untagged], [f[0] for f in fair], [f[1] for f in fair],
         ))  # fmt: skip
     return out
 
 
 def replay(store: Store, strategies: Sequence[Strategy], start: datetime | None = None,
-           end: datetime | None = None) -> dict[str, list[MakerFill]]:  # fmt: skip
-    """Fills per strategy from replaying the recorded ticks in [start, end)."""
+           end: datetime | None = None, every: int = 1) -> dict[str, list[MakerFill]]:  # fmt: skip
+    """Fills per strategy from replaying every `every`-th recorded tick in [start, end)."""
+    if every < 1:
+        raise ValueError("every must be at least 1")
     markets = _load(store)
-    ticks = [t for t in store.maker_ticks() if (start is None or t >= start) and (end is None or t < end)]
+    ticks = [t for t in store.maker_ticks() if (start is None or t >= start) and (end is None or t < end)][::every]
     makers = {s.name: {m.ticker: MarketMaker(m.ticker, s.quoter) for m in markets} for s in strategies}
     fills: dict[str, list[MakerFill]] = {s.name: [] for s in strategies}
     markets.sort(key=lambda m: m.book_times[0])

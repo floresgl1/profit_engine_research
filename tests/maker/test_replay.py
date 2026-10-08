@@ -4,6 +4,7 @@ import random
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal as D
 
+import pytest
 from factories import make_market
 
 from profit_engine import cli
@@ -129,6 +130,70 @@ def test_untagged_trades_from_older_recordings_still_replay(tmp_path):
     assert [(f.side, f.quantity, f.at) for f in fills] == [("bid", D(10), T0 + 2 * TICK)]
 
 
+def test_skipped_ticks_deliver_their_trades_to_the_next_tick_used(tmp_path):
+    # Three ticks; the trade sweeping our bid was delivered by the middle one. At every=2 the middle
+    # tick is skipped, so the bid (posted at the first tick) fills at the third.
+    store = Store(tmp_path / "every.db")
+    t = TICKERS[0]
+    store.upsert_market(make_market(market_id=t, close_time=T0 + timedelta(hours=1)), T0)
+    for i in range(3):
+        store.add_maker_tick(T0 + i * TICK)
+    store.add_snapshot(OrderBook("kalshi", t, (Level(D("0.40"), D(5)),), (Level(D("0.44"), D(5)),), T0))
+    store.add_maker_trades(t, [PublicTrade("a", T0 + timedelta(seconds=5), D("0.39"), D(1), False)], tick_at=T0 + TICK)
+    v1 = STRATEGIES["join_touch_v1"]
+    assert [f.at for f in replay(store, [v1])["join_touch_v1"]] == [T0 + TICK]
+    assert [f.at for f in replay(store, [v1], every=2)["join_touch_v1"]] == [T0 + 2 * TICK]
+    with pytest.raises(ValueError):
+        replay(store, [v1], every=0)
+
+
+class TimedSource(ScriptedSource):
+    """The scripted market fixed in advance, so makers polling at different speeds see the same one."""
+
+    def __init__(self, clock, seed=3, close=T0 + timedelta(hours=1)):
+        gen_clock = Clock()
+        gen = ScriptedSource(gen_clock, seed, close)
+        markets = gen.list_markets()
+        self.slots = []  # the books of each 10 s slot
+        while gen_clock.t < close:
+            self.slots.append(gen.fetch_books(markets))
+            gen_clock.t += TICK
+        super().__init__(clock, seed, close)
+        self.trades = gen.trades
+
+    def fetch_books(self, markets):
+        slot = self.slots[(self.clock() - T0) // TICK]
+        return {m.market_id: slot[m.market_id] for m in markets}
+
+
+def test_replay_every_5_reproduces_a_live_maker_polling_5x_slower(tmp_path):
+    def fair(market, book):  # as in the v2 test: vetoes bids, then no price, then neutral
+        phase = int((book.received_at - T0).total_seconds() // 300) % 3
+        return [D("0.10"), None, D("0.45")][phase]
+
+    strategies = [STRATEGIES["join_touch_v1"], STRATEGIES["model_veto_v2"]]
+
+    def run(path, step, ticks):
+        store, clock = Store(path), Clock()
+        r = MakerRunner(TimedSource(clock), store, strategies, RunnerConfig(market_refresh=timedelta(minutes=10)),
+                        now=clock, fair=fair)  # fmt: skip
+        for i in range(ticks):
+            clock.t = T0 + i * step
+            r.tick()
+        return store
+
+    fast = run(tmp_path / "fast.db", TICK, 360)
+    slow = run(tmp_path / "slow.db", 5 * TICK, 72)
+    replayed = replay(fast, strategies, every=5)
+    for s in strategies:
+        live_slow = sorted(map(key, (f for _, _, f in slow.maker_fills(s.name))))
+        assert len(live_slow) > 10
+        assert sorted(map(key, replayed[s.name])) == live_slow
+    # polling speed changes the fills on this market, so the test can tell the two apart
+    assert sorted(map(key, replay(fast, strategies[:1])["join_touch_v1"])) != sorted(
+        map(key, (f for _, _, f in slow.maker_fills("join_touch_v1"))))
+
+
 def test_v3_size_skew_hand_computed():
     from profit_engine.maker.quoter import MarketMaker
 
@@ -171,6 +236,20 @@ def test_replay_cli(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "[join_touch_v1]" in out and "[skew_size_v3a]" in out and "[fidelity" in out
     assert cli.main(["--db", str(tmp_path / "live.db"), "replay", "--strategies", "nope"]) == 2
+
+
+def test_replay_cli_compares_polling_speeds(tmp_path, capsys):
+    store = live_run(tmp_path, [STRATEGIES["join_touch_v1"]], ticks=60)
+    store.close()
+    db = str(tmp_path / "live.db")
+    assert cli.main(["--db", db, "replay", "--strategies", "model_veto_v2", "--every", "5,1", "--breakdown"]) == 0
+    out = capsys.readouterr().out
+    assert "(median 10.0s apart); replayed at every 1 = 10s, every 5 = 50s" in out
+    assert "[join_touch_v1@every5]" in out and "[breakdown model_veto_v2@every5" in out
+    assert "[model_veto_v2 - join_touch_v1, paired" in out
+    assert "[join_touch_v1 - join_touch_v1@every5, paired" in out and "[fidelity" in out
+    assert cli.main(["--db", db, "replay", "--every", "0"]) == 2
+    assert cli.main(["--db", db, "replay", "--every", "x"]) == 2
 
 
 def test_live_strategies_unchanged_by_the_registry():

@@ -18,7 +18,7 @@ Both see the same books and trades, so pairing removes the day's luck.
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -170,7 +170,10 @@ def render(
     runs: dict[str, datetime],
     baseline: str = "join_touch_v1",
     pair_from: date | None = None,
+    pairs: Sequence[tuple[str, str]] | None = None,
 ) -> str:
+    """Per-strategy results, then paired comparisons: each (a, b) in `pairs` as a - b on the same
+    days (default: every strategy against `baseline`)."""
     if not by_strategy:
         return "No paper market-maker fills yet."
     lines, days_of = [], {}
@@ -184,12 +187,13 @@ def render(
         for d in days[-7:]:
             tag = "" if d.settled else "  (unsettled: marked at last mid)"
             lines.append(f"    {d.day}  {d.pnl:+.2f}  fills {d.fills}{tag}")
-    if baseline in days_of:
-        for name in sorted(days_of):
-            if name == baseline:
-                continue
-            starts = [started(s, runs, by_strategy) for s in (name, baseline)]
-            start = pair_from or (covered_from(max(t for t in starts if t)) if any(starts) else date.min)
-            lines.append(f"[{name} - {baseline}, paired, days from {start}]")
-            lines.append(fmt_stats(paired(days_of[baseline], days_of[name], start)))
+    if pairs is None:
+        pairs = [(name, baseline) for name in sorted(days_of) if name != baseline] if baseline in days_of else []
+    for name, other in pairs:
+        if name not in days_of or other not in days_of:
+            continue
+        starts = [started(s, runs, by_strategy) for s in (name, other)]
+        start = pair_from or (covered_from(max(t for t in starts if t)) if any(starts) else date.min)
+        lines.append(f"[{name} - {other}, paired, days from {start}]")
+        lines.append(fmt_stats(paired(days_of[other], days_of[name], start)))
     return "\n".join(lines)

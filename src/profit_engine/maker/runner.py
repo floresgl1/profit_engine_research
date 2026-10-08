@@ -40,9 +40,13 @@ from profit_engine.maker.quoter import MakerFill, MarketMaker, QuoterConfig
 from profit_engine.storage import Store
 
 log = logging.getLogger(__name__)
+LOG_EVERY = timedelta(minutes=5)  # one progress line this often, whatever the tick interval
 
 _UNSET = object()  # no model price recorded yet for a market
-OVERLAP = timedelta(seconds=2)  # re-read this much before the last tick; ids de-duplicate
+# Re-read this much before the last tick (ids de-duplicate), so a trade the venue publishes late is
+# still read. Fixed, not a share of the interval: at 2-second ticks a 2 s overlap would drop for good
+# every trade published more than about 4 s late, and missing sweeps would flatter faster polling.
+OVERLAP = timedelta(seconds=10)
 
 
 @dataclass(frozen=True)
@@ -202,24 +206,31 @@ class MakerRunner:
 
     def run_forever(self, cycles: int | None = None) -> None:
         n, fills_total = 0, 0
+        window, window_ticks, window_cpu = time.monotonic(), 0, 0.0
         while cycles is None or n < cycles:
-            started, cpu = time.monotonic(), time.process_time()
+            started, cpu = time.monotonic(), time.thread_time()  # this thread only: ingest runs beside it
             try:
                 fills_total += len(self.tick())
             except Exception:  # one bad tick (network, parse) must not end a weeks-long run
                 log.exception("maker tick failed")
             n += 1
-            if n % 30 == 0 or n == 1:
+            window_ticks += 1
+            window_cpu += time.thread_time() - cpu
+            elapsed = time.monotonic() - window
+            if n == 1 or elapsed >= LOG_EVERY.total_seconds():
                 parts = []
                 for s in self.strategies:
                     makers = self.makers[s.name]
                     quoting = sum(1 for t in self.open if t in makers and makers[t].quotes)
                     exposure = sum(abs(makers[t].position) for t in self.open if t in makers)  # open markets only
                     parts.append(f"{s.name}: {quoting} quoting, open |position| {exposure}")
+                # ticks run back to back when one takes longer than the interval: "s apart" is the real pace
                 log.info(
-                    "maker tick %d: %d open markets, %d fills so far; %s; cpu %.3fs",
-                    n, len(self.open), fills_total, "; ".join(parts), time.process_time() - cpu,
+                    "maker tick %d: %d open markets, %d fills so far; %s; %d ticks %.1fs apart, cpu %.3fs per tick",
+                    n, len(self.open), fills_total, "; ".join(parts), window_ticks,
+                    elapsed / window_ticks, window_cpu / window_ticks,
                 )  # fmt: skip
+                window, window_ticks, window_cpu = time.monotonic(), 0, 0.0
             sleep = self.config.interval.total_seconds() - (time.monotonic() - started)
             if sleep > 0 and (cycles is None or n < cycles):
                 time.sleep(sleep)

@@ -62,7 +62,8 @@ cd /home/YOURUSER/profit_engine_research && .venv/bin/profit-engine --db data/re
 ```
 
 (Add `--maker-series KXHIGHNY` the same way to the all-cities command if you
-run that one.) It runs two strategies on the same data: `join_touch_v1` (quote at the best bid and ask) and `model_veto_v2` (the same, minus quotes the temperature model puts more than 20c against us; see research/maker_rules.md). The log gets a `maker tick N` line every 30 ticks (5 minutes) with both.
+run that one.) It runs two strategies on the same data: `join_touch_v1` (quote at the best bid and ask) and `model_veto_v2` (the same, minus quotes the temperature model puts more than 20c against us; see research/maker_rules.md). The log gets a `maker tick N` line every 5 minutes with both, ending with how many ticks ran, how far
+apart they really were, and the maker thread's CPU per tick.
 The ingest line's `cpu Ns total` is now for the whole process, maker
 included; the maker added about 0.02-0.05 s per 10 s tick in testing.
 Results: `.venv/bin/profit-engine --db data/maker.db maker-report`: per
@@ -106,7 +107,7 @@ summary also lists errors in the last 24 h, the latest maker tick line, each
 strategy's open positions, and data size, growth per day and largest files. Each repeats at most every 6 hours while it lasts and sends a
 "resolved" message when it clears (state in `~/.profit_engine_alerts.json`).
 
-## Current schedule (as deployed, 2026-10-05)
+## Current schedule (as deployed, 2026-10-05; maker at 2-second ticks for the speed experiment)
 
 The PythonAnywhere account (`floresgl907`, Developer plan) allows one
 always-on task and shares its daily CPU allowance with finance_bot.
@@ -115,8 +116,10 @@ always-on task and shares its daily CPU allowance with finance_bot.
 v2 on NYC, log file for the health check):
 
 ```
-cd /home/floresgl907/profit_engine_research && .venv/bin/profit-engine --log-file data/engine.log --db data/research.db ingest --kalshi-series KXHIGHNY,KXHIGHCHI,KXHIGHAUS,KXHIGHMIA,KXHIGHLAX,KXHIGHDEN,KXHIGHPHIL --temperature-params research/temperature_params.json --temperature-params research/temperature_params_lamp_v3.json --temperature-params research/params/KXHIGHCHI.json --temperature-params research/params/KXHIGHAUS.json --temperature-params research/params/KXHIGHMIA.json --temperature-params research/params/KXHIGHLAX.json --temperature-params research/params/KXHIGHDEN.json --temperature-params research/params/KXHIGHPHIL.json --interval 60 --maker-series KXHIGHNY
+cd /home/floresgl907/profit_engine_research && .venv/bin/profit-engine --log-file data/engine.log --db data/research.db ingest --kalshi-series KXHIGHNY,KXHIGHCHI,KXHIGHAUS,KXHIGHMIA,KXHIGHLAX,KXHIGHDEN,KXHIGHPHIL --temperature-params research/temperature_params.json --temperature-params research/temperature_params_lamp_v3.json --temperature-params research/params/KXHIGHCHI.json --temperature-params research/params/KXHIGHAUS.json --temperature-params research/params/KXHIGHMIA.json --temperature-params research/params/KXHIGHLAX.json --temperature-params research/params/KXHIGHDEN.json --temperature-params research/params/KXHIGHPHIL.json --interval 60 --maker-series KXHIGHNY --maker-interval 2
 ```
+
+Before the speed experiment the same command ran without `--maker-interval 2` (10-second maker ticks).
 
 **Scheduled tasks** (UTC), with finance_bot's around them for reference:
 
@@ -184,7 +187,27 @@ before, 00-10, 10-14, 14-18, 18-close local) and by how the fill happened
 (our turn in the queue vs a trade printing through our price), with the
 number of days each slice was positive.
 
-About 11 CPU-seconds per recorded day. Days recorded before 2026-10-08 replay
+### Polling speed
+
+`--every N` replays using only every Nth recorded tick: the trades the
+skipped ticks delivered arrive at the next tick used, as they would for a
+slower poller, and books and model prices are read as of the ticks used.
+A list runs each strategy at each speed on the same data:
+
+```
+.venv/bin/profit-engine --db data/maker.db replay --strategies model_veto_v2 --every 1,5 --start FIRST_FULL_DAY_AT_2S --breakdown
+```
+
+The slower copies are named `NAME@every5` and paired against the same
+strategy at full speed (`join_touch_v1 - join_touch_v1@every5` is what the
+faster polling gained, per day). The header prints the recorded ticks'
+median spacing and what each N means in seconds: start the window on the
+first full UTC day recorded at 2 seconds, or `every 5` of 10-second
+recordings is a 50-second maker. On 2-second recordings, `every 5` is the
+10-second maker exactly (tested against a live 5x slower run).
+
+About 11 CPU-seconds per recorded day at 10-second ticks; expect about 5x
+that per speed on 2-second recordings. Days recorded before 2026-10-08 replay
 approximately (trades weren't tagged with the tick that delivered them, and
 "no model price" wasn't recorded); later days reproduce live fills exactly.
 
@@ -195,6 +218,11 @@ approximately (trades weren't tagged with the tick that delivered them, and
   shared with finance_bot; if the task exceeds it, it is stopped until the
   next day. Check the per-day growth after the first day.
 - Skip-rate alerts appear in the same log as `ALERT`.
+- At 2-second maker ticks: the `maker tick` line should say about `2.0s apart`.
+  Each tick makes one book request plus one trades request per open market
+  (up to about 13), so a slow network or Kalshi rate limiting shows up as a
+  larger spacing; `grep -c ' -> 429' data/engine.log` counts rate-limit
+  retries. `cpu Xs per tick` x 43,200 ticks is the maker's CPU per day.
 - `profit-engine --db data/research.db status` and `... score` from a console.
 - Every city's v3 model logs as `kxhigh_lamp_v3`, so plain `score` pools
   the cities; `score --series KXHIGHCHI` (or a comma-separated list)
