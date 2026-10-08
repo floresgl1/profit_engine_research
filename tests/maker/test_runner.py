@@ -40,9 +40,9 @@ class FakeSource:
         return {m.market_id: OrderBook("kalshi", m.market_id, (Level(D("0.40"), D(5)),), (Level(D("0.44"), D(5)),), T0)
                 for m in markets}
 
-    def fetch_trades(self, ticker, since):
+    def fetch_recent_trades(self, tickers, since):
         self.calls.append(since)
-        return [t for t in self.trades if t.at >= since]
+        return {ticker: [t for t in self.trades if t.at >= since] for ticker in tickers}
 
     def fetch_markets(self, tickers):
         return {t: make_market(market_id=t) for t in tickers}
@@ -226,7 +226,8 @@ def test_tick_log_counts_open_markets_only(tmp_path, caplog):
 def test_late_published_trade_is_read_at_two_second_ticks(tmp_path):
     # A trade printed at t=1 that the venue only shows from t=7 (6 s late) is still read, once.
     store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
-    src.fetch_trades = lambda ticker, since: [t for t in late if t.at >= since and clock.t >= at(7)]
+    src.fetch_recent_trades = lambda tickers, since: {
+        ticker: [t for t in late if t.at >= since and clock.t >= at(7)] for ticker in tickers}
     late = [PublicTrade("a", at(1), D("0.44"), D(8), True)]  # 5 ahead on the ask, 3 to us
     r = runner(src, store, clock)
     fills = []
@@ -235,3 +236,52 @@ def test_late_published_trade_is_read_at_two_second_ticks(tmp_path):
         fills += r.tick()
     assert [(f.quantity, f.at) for f in fills] == [(D(3), at(8))]
     assert [tick for _, tick in store.maker_trade_ticks("M")] == [at(8)]
+
+
+def test_one_trades_request_per_tick_for_all_markets(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    src.open = ["M", "N", "P"]
+    r = runner(src, store, clock)
+    for s in (0, 10, 20):
+        clock.t = at(s)
+        r.tick()
+    assert src.calls == [at(0) - OVERLAP, at(10) - OVERLAP]  # none on the first tick, then one per tick
+
+
+def test_failed_trades_read_loses_nothing(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    r = runner(src, store, clock)
+    r.tick()
+    src.trades = [PublicTrade("a", at(5), D("0.44"), D(8), True)]  # 5 ahead on the ask, 3 to us
+    real = src.fetch_recent_trades
+
+    def down(tickers, since):
+        raise RuntimeError("network")
+
+    src.fetch_recent_trades = down
+    clock.t = at(10)
+    try:
+        r.tick()
+    except RuntimeError:
+        pass
+    src.fetch_recent_trades = real
+    clock.t = at(20)
+    assert [(f.quantity, f.at) for f in r.tick()] == [(D(3), at(20))]
+    assert src.calls[-1] == at(0) - OVERLAP  # read from where the last good read left off
+    assert at(10) not in store.maker_ticks()  # the failed tick isn't recorded, so replay skips it too
+
+
+def test_trades_read_while_the_book_is_unusable_arrive_at_the_next_good_tick(tmp_path):
+    store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
+    good = src.fetch_books
+    r = runner(src, store, clock)
+    r.tick()
+    src.trades = [PublicTrade("a", at(5), D("0.40"), D(2), False)]
+    src.fetch_books = lambda markets: {}  # no book this tick
+    clock.t = at(10)
+    r.tick()
+    assert store.maker_trades("M") == []
+    src.fetch_books = good
+    clock.t = at(20)
+    r.tick()
+    assert [(t.trade_id, tick) for t, tick in store.maker_trade_ticks("M")] == [("a", at(20))]
