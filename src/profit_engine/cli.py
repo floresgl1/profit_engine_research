@@ -270,6 +270,16 @@ def cmd_replay(args: argparse.Namespace) -> int:
         return 2
     if "join_touch_v1" not in names:
         names.insert(0, "join_touch_v1")  # the baseline every other strategy is paired against
+    try:
+        speeds = sorted({int(x) for x in args.every.split(",") if x.strip()})
+    except ValueError:
+        speeds = []
+    if not speeds or speeds[0] < 1:
+        print(f"--every needs whole numbers >= 1, got {args.every!r}", file=sys.stderr)
+        return 2
+
+    def label(name: str, every: int) -> str:
+        return name if every == 1 else f"{name}@every{every}"
 
     def day_start(text: str | None):
         return datetime.fromisoformat(text).replace(tzinfo=timezone.utc) if text else None
@@ -281,20 +291,32 @@ def cmd_replay(args: argparse.Namespace) -> int:
             print("Nothing recorded yet.")
             return 0
         start, end = day_start(args.start) or ticks[0], day_start(args.end) or ticks[-1] + timedelta(seconds=1)
-        fills = replay(store, [STRATEGIES[n] for n in names], start, end)
+        fills = {}
+        for every in speeds:
+            for name, fs in replay(store, [STRATEGIES[n] for n in names], start, end, every).items():
+                fills[label(name, every)] = fs
         resolutions = {r.market_id: r.yes_value for r in store.resolutions() if r.venue == "kalshi"}
 
         def mark(ticker: str):
             book = store.latest_book("kalshi", ticker)
             return midpoint(book) if book else None
 
-        print(f"replay {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC, {sum(1 for t in ticks if start <= t < end)} ticks")
-        print(render(fills, resolutions, mark, {}, pair_from=covered_from(start)))
+        window = [t for t in ticks if start <= t < end]
+        gaps = sorted((b - a).total_seconds() for a, b in zip(window, window[1:]))
+        median = gaps[len(gaps) // 2] if gaps else 0.0  # the recorded polling interval
+        polled = ", ".join(f"every {e} = {e * median:.0f}s" for e in speeds)
+        print(f"replay {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC, {len(window)} ticks "
+              f"(median {median:.1f}s apart); replayed at {polled}")  # fmt: skip
+        fast = speeds[0]
+        pairs = [(label(n, fast), label("join_touch_v1", fast)) for n in names if n != "join_touch_v1"]
+        pairs += [(label(n, fast), label(n, e)) for n in names for e in speeds[1:]]  # what the faster polling gained
+        print(render(fills, resolutions, mark, {}, pair_from=covered_from(start), pairs=pairs))
         if args.breakdown:
-            for name in names:
-                print(render_breakdown(name, breakdown(fills[name], resolutions)))
+            for every in speeds:
+                for name in names:
+                    print(render_breakdown(label(name, every), breakdown(fills[label(name, every)], resolutions)))
         live = [f for _, _, f in store.maker_fills("join_touch_v1")]
-        rows = fidelity(live, fills["join_touch_v1"], start, end)
+        rows = fidelity(live, fills["join_touch_v1"], start, end) if 1 in speeds else []
         if rows:
             print("[fidelity: join_touch_v1 contracts, live vs replay]")
             for r in rows:
@@ -419,6 +441,9 @@ def parser() -> argparse.ArgumentParser:
     rep.add_argument("--end", help="UTC date to stop before (YYYY-MM-DD; default: after the last tick)")
     rep.add_argument("--breakdown", action="store_true",
                      help="also split settled PnL by session and by queue vs swept fills")
+    rep.add_argument("--every", default="1",
+                     help="replay using every Nth recorded tick; a list like 1,5 compares polling speeds on the "
+                          "same data, paired (default 1: as recorded)")
     rep.set_defaults(func=cmd_replay)
 
     compact = sub.add_parser("compact-books", help="one-time: trim stored books to the top levels and reclaim space")
