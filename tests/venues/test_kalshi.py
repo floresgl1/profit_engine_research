@@ -131,6 +131,7 @@ class FakeKalshi:
         self.historical = {}
         self.page_size = 1000
         self.requests = []
+        self.trades = []  # raw trade dicts, newest first (the feed's order isn't documented)
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         assert request.method == "GET"
@@ -157,6 +158,13 @@ class FakeKalshi:
             page = rows[start : start + self.page_size]
             cursor = str(start + self.page_size) if start + self.page_size < len(rows) else ""
             return httpx.Response(200, json={"markets": page, "cursor": cursor})
+        if path == "/markets/trades":
+            assert "ticker" not in params  # one exchange-wide read
+            rows = [t for t in self.trades if datetime.fromisoformat(t["created_time"]).timestamp() >= int(params["min_ts"])]
+            start = int(params.get("cursor") or 0)
+            page = rows[start : start + self.page_size]
+            cursor = str(start + self.page_size) if start + self.page_size < len(rows) else ""
+            return httpx.Response(200, json={"trades": page, "cursor": cursor})
         if path.startswith("/historical/markets/"):
             ticker = path.split("/")[-1]
             if ticker in self.historical:
@@ -257,3 +265,34 @@ class TestKalshiSource:
         assert set(resolutions) == {"DONE", "OLD"}
         assert resolutions["DONE"].yes_value == D("1")
         assert resolutions["OLD"].yes_value == D("0")
+
+
+def raw_trade(trade_id, ticker, at, side="yes", block=False):
+    return {"trade_id": trade_id, "ticker": ticker, "created_time": at.isoformat(), "yes_price_dollars": "0.4200",
+            "count_fp": "5.00", "taker_outcome_side": side, "is_block_trade": block}
+
+
+class TestRecentTrades:
+    def test_one_read_for_all_markets_kept_per_market_oldest_first(self):
+        fake = FakeKalshi()
+        t = NOW - timedelta(seconds=30)
+        fake.trades = [  # newest first, as a feed might return them
+            raw_trade("5", "KX-A", t + timedelta(seconds=9)),
+            raw_trade("4", "OTHER", t + timedelta(seconds=8)),  # not ours
+            raw_trade("3", "KX-B", t + timedelta(seconds=6), block=True),  # block trades aren't public prints
+            raw_trade("2", "KX-A", t + timedelta(seconds=4)),
+            raw_trade("1", "KX-B", t + timedelta(seconds=2)),
+            raw_trade("0", "KX-A", t - timedelta(seconds=5)),  # before `since`
+        ]
+        fake.page_size = 2
+        got = source(fake).fetch_recent_trades(["KX-A", "KX-B", "KX-C"], t)
+        assert {k: [x.trade_id for x in v] for k, v in got.items()} == {"KX-A": ["2", "5"], "KX-B": ["1"], "KX-C": []}
+        assert len(fake.requests) == 3  # 5 trades from `since` on, 2 per page
+
+    def test_page_cap_stops_a_runaway_read(self, caplog):
+        fake = FakeKalshi()
+        fake.trades = [raw_trade(str(i), "KX-A", NOW - timedelta(seconds=i)) for i in range(10)]
+        fake.page_size = 2
+        got = source(fake).fetch_recent_trades(["KX-A"], NOW - timedelta(minutes=1), max_pages=3)
+        assert len(fake.requests) == 3 and len(got["KX-A"]) == 6
+        assert "stopped after 3 pages" in caplog.text

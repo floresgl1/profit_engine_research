@@ -13,7 +13,7 @@ Endpoints (docs.kalshi.com, checked 2026-10-03):
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, Decimal
 from typing import Any
@@ -58,6 +58,7 @@ _STATUS = {
 
 _BOOK_BATCH = 100
 _MARKET_BATCH = 100
+TRADE_PAGES = 20  # exchange-wide trades pages per fetch (1,000 each); ~2 is normal, 20 is a runaway guard
 _ONE = Decimal(1)
 
 
@@ -217,6 +218,32 @@ class KalshiSource:
         params = {"ticker": ticker, "min_ts": int(since.timestamp()), "limit": 1000}
         trades = [t for raw in self._paginate("/markets/trades", params, key="trades") if (t := parse_trade(raw))]
         return sorted(trades, key=lambda t: t.at)
+
+    def fetch_recent_trades(
+        self, tickers: Iterable[str], since: datetime, max_pages: int = TRADE_PAGES
+    ) -> dict[str, list[PublicTrade]]:
+        """Public non-block trades at or after `since` (whole seconds) in any of `tickers`, oldest first.
+
+        One exchange-wide request per page instead of one per market: Kalshi limits anonymous
+        requests per second, and per-market requests at 2-second maker ticks drew a stream of 429s
+        (2026-10-08). The exchange prints about 100 trades a second, so a window of ~12 s is ~2 pages.
+        Every page is read whatever the feed's order (the docs don't state it); trades are sorted here.
+        """
+        wanted = set(tickers)
+        out: dict[str, list[PublicTrade]] = {t: [] for t in wanted}
+        params: dict[str, Any] = {"min_ts": int(since.timestamp()), "limit": 1000}
+        cursor = ""
+        for _ in range(max_pages):
+            data = self.http.get_json("/markets/trades", dict(params, cursor=cursor) if cursor else params)
+            for raw in data.get("trades", []):
+                if raw.get("ticker") in wanted and (t := parse_trade(raw)):
+                    out[raw["ticker"]].append(t)
+            cursor = data.get("cursor") or ""
+            if not cursor:
+                break
+        else:
+            log.warning("trades feed: stopped after %d pages; some trades since %s may be missing", max_pages, since)
+        return {ticker: sorted(trades, key=lambda t: t.at) for ticker, trades in out.items()}
 
     def _paginate(self, path: str, params: dict[str, Any], key: str = "markets") -> Iterator[dict[str, Any]]:
         cursor = ""

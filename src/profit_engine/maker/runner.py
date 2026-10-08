@@ -70,7 +70,7 @@ FairPrice = Callable[[Market, OrderBook], Decimal | None]
 class MakerRunner:
     def __init__(
         self,
-        source,  # KalshiSource (list_markets, fetch_books, fetch_trades, fetch_markets, fetch_resolutions)
+        source,  # KalshiSource (list_markets, fetch_books, fetch_recent_trades, fetch_markets, fetch_resolutions)
         store: Store,
         strategies: Sequence[Strategy],
         config: RunnerConfig = RunnerConfig(),
@@ -94,8 +94,9 @@ class MakerRunner:
         for s in strategies:
             store.add_maker_run(s.name, started)
         self.open: dict[str, Market] = {}
-        self._since: dict[str, datetime] = {}
+        self._trades_since: datetime | None = None  # when trades were last read (all markets at once)
         self._seen: dict[str, dict[str, datetime]] = {}
+        self._held: dict[str, list[PublicTrade]] = {}  # read while the market's book was unusable
         self._refreshed: datetime | None = None
         self._restore()
 
@@ -120,6 +121,10 @@ class MakerRunner:
         if self._refreshed is None or now - self._refreshed >= self.config.market_refresh:
             self._refresh_markets(now)
         books = self.source.fetch_books(list(self.open.values())) if self.open else {}
+        # Trades are needed where something rests (or everywhere, when recording). Nothing needed:
+        # no request, and reading starts from now.
+        needed = [t for t in self.open if self.config.record or any(self._maker(s, t).quotes for s in self.strategies)]
+        new_trades = self._new_trades(needed, now)
         if self.config.record:
             self.store.add_maker_tick(now)
         fills: list[MakerFill] = []
@@ -129,18 +134,15 @@ class MakerRunner:
             if book is None or isinstance(book, InvalidOrderBook):
                 for _, maker in makers:
                     maker.stop()
+                self._held.setdefault(ticker, []).extend(new_trades.get(ticker, []))  # deliver at its next good tick
                 continue
             kept = self.store.stored_levels(book)
             if self.config.record and self._last_book.get(ticker) != kept:
                 self.store.add_snapshot(book)
                 self._last_book[ticker] = kept
-            if self.config.record or any(maker.quotes for _, maker in makers):
-                trades = self._new_trades(ticker, now)
-                if self.config.record:
-                    self.store.add_maker_trades(ticker, trades, tick_at=now)
-            else:  # nothing resting can fill: skip the request, start reading trades from now
-                self._since[ticker] = now
-                trades = []
+            trades = self._held.pop(ticker, []) + new_trades.get(ticker, [])
+            if self.config.record:
+                self.store.add_maker_trades(ticker, trades, tick_at=now)
             fair = self._fair_price(market, book)
             if self.config.record and self._needs_fair and self._last_fair.get(ticker, _UNSET) != fair:
                 self.store.add_maker_fair(ticker, now, fair)  # None too: replay must know the price went away
@@ -161,26 +163,36 @@ class MakerRunner:
             log.exception("model price failed for %s", market.market_id)
             return None
 
-    def _new_trades(self, ticker: str, now: datetime) -> list[PublicTrade]:
-        since = self._since.get(ticker)
-        self._since[ticker] = now
-        if since is None:
-            return []  # first look at this market: nothing before our quotes exist
-        seen = self._seen.setdefault(ticker, {})
-        fresh = [t for t in self.source.fetch_trades(ticker, since - OVERLAP) if t.trade_id not in seen]
-        for t in fresh:
-            seen[t.trade_id] = t.at
+    def _new_trades(self, tickers: list[str], now: datetime) -> dict[str, list[PublicTrade]]:
+        """Trades not seen before, per market, since the last read: one exchange-wide request.
+
+        The read time only moves on after a successful read, so a failed tick loses nothing: the
+        next one reads from the same point.
+        """
+        since = self._trades_since
+        if since is None or not tickers:
+            self._trades_since = now  # first tick (nothing before our quotes exist), or nothing to read
+            return {}
+        fetched = self.source.fetch_recent_trades(tickers, since - OVERLAP)
+        self._trades_since = now
+        out = {}
         horizon = since - 3 * OVERLAP
-        for tid in [tid for tid, at in seen.items() if at < horizon]:
-            del seen[tid]
-        return fresh
+        for ticker in tickers:
+            seen = self._seen.setdefault(ticker, {})
+            fresh = [t for t in fetched.get(ticker, []) if t.trade_id not in seen]
+            for t in fresh:
+                seen[t.trade_id] = t.at
+            for tid in [tid for tid, at in seen.items() if at < horizon]:
+                del seen[tid]
+            out[ticker] = fresh
+        return out
 
     def _refresh_markets(self, now: datetime) -> None:
         listed = {m.market_id: m for m in self.source.list_markets()}
         for ticker in set(self.open) - set(listed):
             for s in self.strategies:
                 self._maker(s, ticker).stop()
-            self._since.pop(ticker, None)
+            self._held.pop(ticker, None)
             self._seen.pop(ticker, None)
         self.open = listed
         self._refreshed = now

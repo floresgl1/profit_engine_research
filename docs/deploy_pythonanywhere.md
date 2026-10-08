@@ -244,9 +244,10 @@ approximately (trades weren't tagged with the tick that delivered them, and
   next day. Check the per-day growth after the first day.
 - Skip-rate alerts appear in the same log as `ALERT`.
 - At 2-second maker ticks: the `maker tick` line should say about `2.0s apart`.
-  Each tick makes one book request plus one trades request per open market
-  (up to about 13), so a slow network or Kalshi rate limiting shows up as a
-  larger spacing; `grep -c ' -> 429' data/engine.log` counts rate-limit
+  Each tick makes one book request plus one exchange-wide trades read
+  (usually 2 pages of 1,000 trades, kept only for our markets), so about
+  1.5 requests a second. A slow network or Kalshi rate limiting shows up as
+  a larger spacing; `grep -c ' -> 429' data/engine.log` counts rate-limit
   retries. `cpu Xs per tick` x 43,200 ticks is the maker's CPU per day.
 - `profit-engine --db data/research.db status` and `... score` from a console.
 - Every city's v3 model logs as `kxhigh_lamp_v3`, so plain `score` pools

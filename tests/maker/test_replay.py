@@ -59,9 +59,10 @@ class ScriptedSource:
                 self.trades[t].append(PublicTrade(f"x{self.n}", at, price, D(self.rng.randint(1, 40)), taker_yes))
         return out
 
-    def fetch_trades(self, ticker, since):
+    def fetch_recent_trades(self, tickers, since):
         # Live fetch happens a little after the tick: it sees trades up to tick + 3 s.
-        return [t for t in self.trades[ticker] if since <= t.at <= self.clock() + timedelta(seconds=3)]
+        late = self.clock() + timedelta(seconds=3)
+        return {ticker: [t for t in self.trades[ticker] if since <= t.at <= late] for ticker in tickers}
 
     def fetch_markets(self, tickers):
         return {}
