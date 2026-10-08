@@ -224,18 +224,19 @@ def test_tick_log_counts_open_markets_only(tmp_path, caplog):
 
 
 def test_late_published_trade_is_read_at_two_second_ticks(tmp_path):
-    # A trade printed at t=1 that the venue only shows from t=7 (6 s late) is still read, once.
+    # A trade printed at t=3 that the venue only shows from t=5.5 (2.5 s late) misses the read at
+    # t=4 and is still read at t=6, once: that read starts OVERLAP before t=4.
     store, src, clock = Store(tmp_path / "m.db"), FakeSource(), Clock()
     src.fetch_recent_trades = lambda tickers, since: {
-        ticker: [t for t in late if t.at >= since and clock.t >= at(7)] for ticker in tickers}
-    late = [PublicTrade("a", at(1), D("0.44"), D(8), True)]  # 5 ahead on the ask, 3 to us
+        ticker: [t for t in late if t.at >= since and clock.t >= at(5.5)] for ticker in tickers}
+    late = [PublicTrade("a", at(3), D("0.44"), D(8), True)]  # 5 ahead on the ask, 3 to us
     r = runner(src, store, clock)
     fills = []
     for s in range(0, 13, 2):
         clock.t = at(s)
         fills += r.tick()
-    assert [(f.quantity, f.at) for f in fills] == [(D(3), at(8))]
-    assert [tick for _, tick in store.maker_trade_ticks("M")] == [at(8)]
+    assert [(f.quantity, f.at) for f in fills] == [(D(3), at(6))]
+    assert [tick for _, tick in store.maker_trade_ticks("M")] == [at(6)]
 
 
 def test_one_trades_request_per_tick_for_all_markets(tmp_path):

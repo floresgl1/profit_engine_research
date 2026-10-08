@@ -226,7 +226,7 @@ class KalshiSource:
 
         One exchange-wide request per page instead of one per market: Kalshi limits anonymous
         requests per second, and per-market requests at 2-second maker ticks drew a stream of 429s
-        (2026-10-08). The exchange prints about 100 trades a second, so a window of ~12 s is ~2 pages.
+        (2026-10-08). The exchange prints about 100 trades a second, so a ~6 s window is ~1 page.
         Every page is read whatever the feed's order (the docs don't state it); trades are sorted here.
         """
         wanted = set(tickers)

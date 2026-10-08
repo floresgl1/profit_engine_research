@@ -43,10 +43,12 @@ log = logging.getLogger(__name__)
 LOG_EVERY = timedelta(minutes=5)  # one progress line this often, whatever the tick interval
 
 _UNSET = object()  # no model price recorded yet for a market
-# Re-read this much before the last tick (ids de-duplicate), so a trade the venue publishes late is
-# still read. Fixed, not a share of the interval: at 2-second ticks a 2 s overlap would drop for good
-# every trade published more than about 4 s late, and missing sweeps would flatter faster polling.
-OVERLAP = timedelta(seconds=10)
+# Re-read this much before the last tick (ids de-duplicate), so a trade the venue publishes a little
+# late is still read; a trade published later than this is lost, and missing sweeps would flatter
+# faster polling. Measured 2026-10-08 with a 10 s overlap at ~3.5 s ticks: 0 of 522 trades arrived
+# after the first read following their print. Each read covers the whole exchange (~100 trades a
+# second), so the overlap sets the read size: 3 s keeps a read to about one 1,000-trade page.
+OVERLAP = timedelta(seconds=3)
 
 
 @dataclass(frozen=True)
