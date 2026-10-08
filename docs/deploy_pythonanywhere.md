@@ -185,7 +185,14 @@ To trim the books already stored and give the space back:
    Each prints the size before and after. A few minutes each.
 4. Restart the always-on task.
 
-If it says the database is locked, the task is still running.
+It refuses to start while the engine is still writing (a maker tick or a
+stored book in the last 2 minutes) and says so; wait and run it again.
+SQLite's own locks don't protect this case on PythonAnywhere, because the
+console and the always-on task run on different machines: on 2026-10-08 a
+compaction under the running task made the task's next writes fail with
+"file is not a database" until it restarted (no damage: `PRAGMA
+quick_check` ok on both files). `--force` skips the check. If it says the
+database is locked, the task is still running.
 
 ## Replaying strategies on the recording
 

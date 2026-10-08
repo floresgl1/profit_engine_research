@@ -1,5 +1,6 @@
 """Stored books keep the top levels only; existing databases can be compacted."""
 
+import re
 from datetime import datetime, timezone
 from decimal import Decimal as D
 
@@ -59,3 +60,28 @@ def test_compact_cli_reports_and_handles_a_busy_database(tmp_path, monkeypatch, 
     monkeypatch.setattr(Store, "vacuum", busy)
     assert cli.main(["--db", str(path), "compact-books"]) == 1
     assert "Stop the always-on task" in capsys.readouterr().err
+
+
+def test_compact_refuses_while_the_engine_is_writing(tmp_path, capsys):
+    from datetime import timedelta
+
+    path = tmp_path / "s.db"
+    store = Store(path, book_levels=None)
+    store.add_snapshot(deep_book())  # old book
+    store.add_maker_tick(datetime.now(timezone.utc) - timedelta(seconds=20))  # the maker ticked 20 s ago
+    store.close()
+    assert cli.main(["--db", str(path), "compact-books"]) == 1
+    err = capsys.readouterr().err
+    assert re.search(r"wrote here 2\d s ago", err) and "still running" in err
+    assert len(Store(path, book_levels=None).latest_book("kalshi", "M").bids) == 12  # untouched
+    assert cli.main(["--db", str(path), "compact-books", "--force"]) == 0
+    assert len(Store(path, book_levels=None).latest_book("kalshi", "M").bids) == 5
+
+
+def test_last_write_is_the_newest_tick_or_book(tmp_path):
+    store = Store(tmp_path / "s.db")
+    assert store.last_write() is None
+    store.add_snapshot(deep_book())
+    assert store.last_write() == T
+    store.add_maker_tick(datetime(2026, 10, 8, 16, tzinfo=timezone.utc))
+    assert store.last_write() == datetime(2026, 10, 8, 16, tzinfo=timezone.utc)

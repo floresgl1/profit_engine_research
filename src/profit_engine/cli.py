@@ -7,7 +7,7 @@ import logging
 import sys
 import threading
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -326,6 +326,12 @@ def cmd_replay(args: argparse.Namespace) -> int:
     return 0
 
 
+# compact-books refuses to run if the engine wrote to the database more recently than this. SQLite's
+# locks don't hold between PythonAnywhere's machines (console vs always-on task), so a VACUUM under a
+# running task isn't blocked: the task's next write fails with "file is not a database" (2026-10-08).
+COMPACT_QUIET = timedelta(minutes=2)
+
+
 def cmd_compact_books(args: argparse.Namespace) -> int:
     """One-time: trim stored books to the top levels and give the space back. Stop the always-on task first."""
     import sqlite3
@@ -336,6 +342,13 @@ def cmd_compact_books(args: argparse.Namespace) -> int:
     before = size(args.db)
     store = Store(args.db)
     try:
+        last = store.last_write()
+        ago = datetime.now(timezone.utc) - last if last else None
+        if ago is not None and ago < COMPACT_QUIET and not args.force:
+            print(f"{args.db}: the engine wrote here {max(0, int(ago.total_seconds()))} s ago, so the always-on "
+                  f"task looks like it is still running. Stop it on the Tasks page, wait until nothing has been "
+                  f"written for {COMPACT_QUIET.seconds // 60} minutes, and run this again.", file=sys.stderr)  # fmt: skip
+            return 1
         changed = store.compact_books(args.levels)
         print(f"{args.db}: trimmed {changed} stored books to {args.levels} levels per side; vacuuming...")
         store.vacuum()
@@ -448,6 +461,8 @@ def parser() -> argparse.ArgumentParser:
 
     compact = sub.add_parser("compact-books", help="one-time: trim stored books to the top levels and reclaim space")
     compact.add_argument("--levels", type=int, default=5, help="price levels kept per side (default 5)")
+    compact.add_argument("--force", action="store_true",
+                         help="skip the check that nothing wrote to the database in the last 2 minutes")
     compact.set_defaults(func=cmd_compact_books)
 
     status = sub.add_parser("status", help="what is in the database")
