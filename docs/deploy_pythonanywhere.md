@@ -119,7 +119,9 @@ The daily summary, in plain words:
   from its 95% interval ("clearly losing" if the whole interval is below
   zero, "clearly winning" if above, otherwise "not clear yet"), the
   interval, total and per-contract PnL in small text, v2 vs v1 paired the
-  same way, and how many of the stop rule's 10 settled days are in;
+  same way plus both strategies' PnL per contract on the same days (dollars
+  a day favour whichever strategy trades less; a note says so when the two
+  disagree), and how many of the stop rule's 10 settled days are in;
 - days still open, marked at current prices.
 
 `--pair-from` still works as another name for `--since`. The full

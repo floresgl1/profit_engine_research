@@ -236,6 +236,20 @@ def health_lines(store, log_path: str | None, data_dir: str, now: datetime, prev
     return [f":warning: {w}" for w in warnings] + [f"-# {', '.join(facts)}"]
 
 
+def paired_per_contract(a, b, start) -> tuple[float | None, float | None]:
+    """Settled PnL per contract (cents) of two strategies over the days their paired comparison uses."""
+    pa = {d.day: d for d in a if d.day >= start}
+    pb = {d.day: d for d in b if d.day >= start}
+    keep = {day for day in set(pa) | set(pb) if all(x is None or x.settled for x in (pa.get(day), pb.get(day)))}
+
+    def cents(days):
+        chosen = [d for d in days.values() if d.day in keep]
+        contracts = sum(float(d.contracts) for d in chosen)
+        return 100 * sum(float(d.pnl) for d in chosen) / contracts if contracts else None
+
+    return cents(pa), cents(pb)
+
+
 def results_lines(store, since=None) -> list[str]:
     """Last settled day, the running averages with plain-word verdicts, and days still open."""
     from profit_engine.core import midpoint
@@ -275,8 +289,8 @@ def results_lines(store, since=None) -> list[str]:
         starts = [started(x, runs, by_strategy) for x in (strategy, BASELINE)]
         start = since or (covered_from(max(t for t in starts if t)) if any(starts) else min(settled, default=None))
         if start is not None:
-            comparisons.append((strategy, paired(days_of[BASELINE], days, start)))
-    count = max([c.days for _, c in comparisons if c] or [sum(1 for d in days_of.get(BASELINE, []) if d.settled)])
+            comparisons.append((strategy, paired(days_of[BASELINE], days, start), start))
+    count = max([c.days for _, c, _ in comparisons if c] or [sum(1 for d in days_of.get(BASELINE, []) if d.settled)])
     if lines:
         lines.append("")
     if since is None:
@@ -296,15 +310,24 @@ def results_lines(store, since=None) -> list[str]:
         detail = f"95% range {money(lo)} to {money(hi)} · " if st.days > 1 else ""
         days_note = f" · {plural(st.days, 'day')}" if st.days != count else ""  # only when it differs from the heading
         lines.append(f"-# {detail}total {money(st.total)} · {st.per_contract:+.2f}c per contract{days_note}")
-    for strategy, c in comparisons:
+    for strategy, c, start in comparisons:
         if c is None:
             continue
-        short = name_of(strategy).split(" ")[0]
+        short, base = name_of(strategy).split(" ")[0], name_of(BASELINE).split(" ")[0]
         lo, hi = c.interval
-        lines.append(f"{short} vs {name_of(BASELINE).split(' ')[0]}: {money(c.mean)} a day, "
+        lines.append(f"{short} vs {base}: {money(c.mean)} a day, "
                      f"{verdict(lo, hi, c.days, f'{short} clearly behind', f'{short} clearly ahead')}")  # fmt: skip
-        if c.days > 1:
-            lines.append(f"-# 95% range {money(lo)} to {money(hi)}" + (f" · {plural(c.days, 'day')}" if c.days != count else ""))
+        detail = [f"95% range {money(lo)} to {money(hi)}"] if c.days > 1 else []
+        if c.days != count:
+            detail.append(plural(c.days, "day"))
+        # Dollars a day favour whichever strategy trades less; per contract says which trades better.
+        mine, theirs = paired_per_contract(days, days_of[BASELINE], start)
+        if mine is not None and theirs is not None:
+            detail.append(f"per contract {short} {mine:+.2f}c vs {base} {theirs:+.2f}c ({mine - theirs:+.2f}c)")
+        if detail:
+            lines.append("-# " + " · ".join(detail))
+        if mine is not None and theirs is not None and c.mean * (mine - theirs) < 0:
+            lines.append("-# dollars and per contract disagree: the gap is how much each trades, not how well")
 
     open_days = sorted({d.day for days in days_of.values() for d in days if not d.settled})
     if open_days:
