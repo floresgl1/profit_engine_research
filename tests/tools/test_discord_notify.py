@@ -221,7 +221,8 @@ def test_results_hand_computed(tmp_path):
         "v2 model veto: +$6.00 a day, needs 2+ days",
         "-# total +$6.00 · +60.00c per contract · 1 day",
         "v2 vs v1: +$1.00 a day, not clear yet",
-        "-# 95% range -$11.71 to +$13.71",
+        # same days: v2 +6.00 on 10 contracts, v1 +6.00 - 2.00 on 15
+        "-# 95% range -$11.71 to +$13.71 · per contract v2 +60.00c vs v1 +26.67c (+33.33c)",
         "",
         "**Still open** (at current prices)",
         "Tue Oct 6: v1 +$1.00",
@@ -253,3 +254,17 @@ def test_summary_records_size_for_next_growth(tmp_path):
     dn.main(["summary", "--db", str(tmp_path / "maker.db"), "--log", str(tmp_path / "none.log"), "--data-dir",
              str(tmp_path / "data"), "--summary-state", str(summary_state)], now=NOW, send=sent.append)
     assert json.loads(summary_state.read_text())["at"] == NOW.isoformat() and len(sent) == 1
+
+
+def test_pair_flags_a_dollar_lead_that_comes_from_trading_less(tmp_path):
+    fills = []
+    for d in (4, 5):
+        fills.append(("join_touch_v1", fill(f"KXHIGHNY-26OCT0{d}-B1", "ask", 10)))  # YES: -6.00 on 10, -60c
+        fills.append(("model_veto_v2", fill(f"KXHIGHNY-26OCT0{d}-B1", "ask", 2, price="0.30")))  # YES: -1.40 on 2, -70c
+    s = store_with(tmp_path, fills=fills)
+    for d in (4, 5):
+        s.upsert_resolution(Resolution("kalshi", f"KXHIGHNY-26OCT0{d}-B1", D(1), NOW))
+    lines = dn.results_lines(s, since=datetime(2026, 10, 4).date())
+    i = lines.index("v2 vs v1: +$4.60 a day, v2 clearly ahead")  # loses $4.60 less every day...
+    assert lines[i + 1] == "-# 95% range +$4.60 to +$4.60 · per contract v2 -70.00c vs v1 -60.00c (-10.00c)"  # ...but worse per contract
+    assert lines[i + 2] == "-# dollars and per contract disagree: the gap is how much each trades, not how well"
