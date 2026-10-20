@@ -90,3 +90,30 @@ def test_model_veto_hand_computed():
     assert set(m.quotes) == {"bid", "ask"}
     with pytest.raises(ValueError):
         QuoterConfig(model_margin=D("-0.01"))
+
+
+def test_imbalance_v4_skips_the_thin_side_hand_computed():
+    m = mm(imbalance_ratio=D(3))
+    m.step(book(bid=("0.40", 5), ask=("0.44", 15)), [], at(0))  # ask holds 15 >= 3 x 5: the bid side is thin
+    assert set(m.quotes) == {"ask"}
+    m = mm(imbalance_ratio=D(3))
+    m.step(book(bid=("0.40", 5), ask=("0.44", 14)), [], at(0))  # 14 < 15: balanced enough
+    assert set(m.quotes) == {"bid", "ask"}
+    m = mm(imbalance_ratio=D(3))
+    m.step(book(bid=("0.40", 30), ask=("0.44", 10)), [], at(0))  # bid holds 30 >= 3 x 10: the ask side is thin
+    assert set(m.quotes) == {"bid"}
+
+
+def test_imbalance_v4_pulls_a_resting_quote_and_reposts_at_the_back():
+    m = mm(imbalance_ratio=D(3))
+    m.step(book(bid=("0.40", 5), ask=("0.44", 5)), [], at(0))
+    assert m.quotes["bid"].queue_ahead == D(5)
+    m.step(book(bid=("0.40", 5), ask=("0.44", 15), s=10), [], at(10))  # imbalance appears: bid pulled
+    assert "bid" not in m.quotes
+    m.step(book(bid=("0.40", 8), ask=("0.44", 10), s=20), [], at(20))  # clears: re-posted behind all 8
+    assert (m.quotes["bid"].queue_ahead, m.quotes["bid"].posted_at) == (D(8), at(20))
+
+
+def test_imbalance_ratio_must_be_above_one():
+    with pytest.raises(ValueError):
+        QuoterConfig(imbalance_ratio=D(1))
