@@ -9,6 +9,13 @@ credentials, uses only public GET endpoints through one client
 (`venues/http.py`), and installs no venue SDK or signing library.
 `tests/test_read_only.py` fails the build if any of that changes.
 
+**Status (2026-10-20): research complete, engine stopped.** No repeatable,
+honest edge was found with public data: forecasts, structural checks and
+calibration screens matched the market, and paper market making lost about
+0.4-0.6c per contract at every speed and with every filter tried. The full
+account is in [`docs/findings.md`](docs/findings.md); the reasoning behind
+each step is in [`docs/decisions.md`](docs/decisions.md).
+
 ## Setup
 
 ```
