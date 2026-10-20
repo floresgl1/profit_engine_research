@@ -22,6 +22,13 @@ to the position: its size shrinks with the position (skew_size) and, from
 half the limit on, it quotes one tick behind the best price (skew_back). A
 resting quote whose wanted size drops shrinks in place and keeps its queue
 place; no quote grows back without re-posting (as in v1).
+
+v4 (book imbalance, replay-only) adds one rule to v1: no quote on a side
+whose best level is much thinner than the other side's best level (the
+opposite holds `imbalance_ratio` times its size or more), a sign the price
+is about to move through it. A resting quote there is pulled; when the
+imbalance clears it re-posts at the back of the queue. The ratio (3) was
+fixed before any result (docs/decisions.md, 2026-10-20).
 """
 
 from __future__ import annotations
@@ -48,12 +55,16 @@ class QuoterConfig:
     # v3, inventory skew. On the side that would add to the position:
     skew_size: bool = False  # quote size x (1 - |position| / max_position), whole contracts (0 at the limit)
     skew_back: bool = False  # and from half the limit on, quote one tick behind the best price
+    # v4: no quote on a side when the opposite best level holds this many times its size or more
+    imbalance_ratio: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.size <= 0 or self.max_position < self.size:
             raise ValueError("need size > 0 and max_position >= size")
         if self.model_margin is not None and self.model_margin < 0:
             raise ValueError("model_margin must be non-negative")
+        if self.imbalance_ratio is not None and self.imbalance_ratio <= 1:
+            raise ValueError("imbalance_ratio must be above 1 (at 1 or below, one side is always skipped)")
 
 
 @dataclass(frozen=True)
@@ -129,6 +140,14 @@ class MarketMaker:
             return False
         return price > fair + m if side == "bid" else price < fair - m
 
+    def _thin(self, side: str, book: OrderBook) -> bool:
+        """v4: is our side's best level thin next to the other side's (a move through it is likely)?"""
+        r = self.config.imbalance_ratio
+        if r is None:
+            return False
+        ours, other = (book.best_bid, book.best_ask) if side == "bid" else (book.best_ask, book.best_bid)
+        return other.size >= r * ours.size
+
     def _adds(self, side: str) -> bool:
         """Would a fill on this side grow |position|?"""
         return self.position > 0 if side == "bid" else self.position < 0
@@ -158,7 +177,7 @@ class MarketMaker:
                 self.quotes.pop(side, None)
                 continue
             current = self.quotes.get(side)
-            if size <= 0 or self._vetoed(side, target, fair):
+            if size <= 0 or self._vetoed(side, target, fair) or self._thin(side, book):
                 self.quotes.pop(side, None)
             elif current is not None and current.price == target:
                 # Same price: keep the queue place. A smaller wanted size shrinks the quote in

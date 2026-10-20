@@ -260,7 +260,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     from profit_engine.core import midpoint
     from profit_engine.maker.replay import breakdown, fidelity, render_breakdown, replay
-    from profit_engine.maker.report import covered_from, render
+    from profit_engine.maker.report import covered_from, event_day_of, render
     from profit_engine.maker.strategies import STRATEGIES
 
     names = [n.strip() for n in args.strategies.split(",") if n.strip()]
@@ -305,18 +305,20 @@ def cmd_replay(args: argparse.Namespace) -> int:
         gaps = sorted((b - a).total_seconds() for a, b in zip(window, window[1:]))
         median = gaps[len(gaps) // 2] if gaps else 0.0  # the recorded polling interval
         polled = ", ".join(f"every {e} = {e * median:.0f}s" for e in speeds)
+        first = covered_from(start)  # an event day whose markets opened before the window is only partly replayed
         print(f"replay {start:%Y-%m-%d %H:%M} to {end:%Y-%m-%d %H:%M} UTC, {len(window)} ticks "
-              f"(median {median:.1f}s apart); replayed at {polled}")  # fmt: skip
+              f"(median {median:.1f}s apart); replayed at {polled}; event days from {first}")  # fmt: skip
+        whole = {name: [f for f in fs if (event_day_of(f.market_id) or first) >= first] for name, fs in fills.items()}
         fast = speeds[0]
         pairs = [(label(n, fast), label("join_touch_v1", fast)) for n in names if n != "join_touch_v1"]
         pairs += [(label(n, fast), label(n, e)) for n in names for e in speeds[1:]]  # what the faster polling gained
-        print(render(fills, resolutions, mark, {}, pair_from=covered_from(start), pairs=pairs))
+        print(render(whole, resolutions, mark, {}, pair_from=first, pairs=pairs))
         if args.breakdown:
             for every in speeds:
                 for name in names:
-                    print(render_breakdown(label(name, every), breakdown(fills[label(name, every)], resolutions)))
+                    print(render_breakdown(label(name, every), breakdown(whole[label(name, every)], resolutions)))
         live = [f for _, _, f in store.maker_fills("join_touch_v1")]
-        rows = fidelity(live, fills["join_touch_v1"], start, end) if 1 in speeds else []
+        rows = fidelity(live, fills["join_touch_v1"], start, end) if 1 in speeds else []  # every day: a simulator check
         if rows:
             print("[fidelity: join_touch_v1 contracts, live vs replay]")
             for r in rows:

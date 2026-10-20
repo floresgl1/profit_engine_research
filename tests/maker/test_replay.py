@@ -257,6 +257,7 @@ def test_live_strategies_unchanged_by_the_registry():
     assert STRATEGIES["join_touch_v1"].quoter == QuoterConfig()
     assert STRATEGIES["model_veto_v2"].quoter == QuoterConfig(model_margin=D("0.20"))
     assert isinstance(MarketMaker("M", STRATEGIES["skew_back_v3b"].quoter), MarketMaker)
+    assert STRATEGIES["imbalance_v4"].quoter == QuoterConfig(imbalance_ratio=D(3))  # as registered
     assert Strategy("x", QuoterConfig()).name == "x"
 
 
@@ -309,3 +310,14 @@ def test_replay_cli_breakdown(tmp_path, capsys):
     store.close()
     assert cli.main(["--db", str(tmp_path / "live.db"), "replay", "--strategies", "join_touch_v1", "--breakdown"]) == 0
     assert "[breakdown join_touch_v1" in capsys.readouterr().out
+
+
+def test_replay_cli_counts_only_whole_event_days(tmp_path, capsys):
+    # Recording from T0 (Oct 9, 14:00 UTC): the Oct 9 markets opened the day before, so Oct 9 is partial.
+    store = live_run(tmp_path, [STRATEGIES["join_touch_v1"]], ticks=60)
+    store.close()
+    assert cli.main(["--db", str(tmp_path / "live.db"), "replay", "--strategies", "imbalance_v4"]) == 0
+    out = capsys.readouterr().out
+    assert "event days from 2026-10-10" in out
+    assert "fills: 0 " in out.split("[imbalance_v4]")[1]  # its Oct 9 fills are left out of the statistics...
+    assert "live " in out.split("[fidelity")[1]  # ...but still checked against live
