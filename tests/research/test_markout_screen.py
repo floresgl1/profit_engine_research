@@ -125,3 +125,24 @@ def test_cache_round_trip(tmp_path, monkeypatch):
     done = {"m": mk("S1", 100, 0.02)}
     ms._save(done)
     assert ms._load() == done
+
+
+def test_fresh_markets_apply_the_screen_filters():
+    info = {"KXW": {"category": "World"}, "KXS": {"category": "Sports"}}
+
+    def m(ticker, event, volume=1000, hours=48):
+        return Settled(ticker, event, T0, T0 + timedelta(hours=hours), 0, D(volume))
+
+    listing = [m("KXW-1-A", "KXW-1"), m("KXW-1-B", "KXW-1"), m("KXW-2-A", "KXW-2", volume=499),
+               m("KXW-3-A", "KXW-3", hours=24), m("KXS-1-A", "KXS-1")]  # fmt: skip
+    got = ms.fresh_markets(listing, info, "World", used={"KXW-1-B"})
+    assert [x.ticker for x in got] == ["KXW-1-A"]  # used, too small, too short and other categories left out
+
+
+def test_confirmation_bar_and_report():
+    assert ms.confirmed(ms.Stat(0.03, 0.019, 15, 85, 1e6))  # range low +1.1c
+    assert not ms.confirmed(ms.Stat(0.03, 0.021, 15, 85, 1e6))  # low +0.9c
+    assert not ms.confirmed(None)
+    rows = [mk(f"W{i}", 1000, 0.03) for i in range(4)]
+    text = ms.confirm_report(rows, "World")
+    assert "Markets: 4 in 4 series, 4,000 contracts" in text and "Passes: yes" in text
