@@ -360,3 +360,47 @@ model - 20c, applied only in the window tested (16:00 the day before to
 16:00 on the day); otherwise, and whenever the model abstains, v2 quotes
 like v1. Same caveat as the markout: these are other makers' fills, so the
 live paper test decides.
+
+## Paper market maker, replay, and the closing tests (`src/profit_engine/maker/`)
+
+**Question.** The markout's +0.8c per contract is what incumbent makers
+keep. Does a newcomer, quoting from the back of the queue with public data,
+keep any of it?
+
+**Method.**
+- **Paper fills, honest queue.** Pretend quotes join the best bid and ask of
+  every NYC bucket (10 contracts, position limit 50, conservative maker fee
+  0.0175 x P x (1-P)). A quote fills only after the visible size ahead of it
+  has traded, or when a trade prints through its price (a sweep). It never
+  places anything.
+- **Live, in the ingest process.** v1 (join the touch) and v2 (v1 plus the
+  model veto from `maker_rules.md`) ran on the same books and trades, at 10 s
+  ticks from 2026-10-05 and at 2 s from 2026-10-08.
+- **Recording and replay.** Every tick, every trade (tagged with the tick
+  that delivered it), books and model prices on change. `replay` feeds any
+  strategy exactly what a live tick would have seen. Tests require it to
+  reproduce live fills, and replaying every 5th tick to reproduce a live
+  maker polling 5x slower. Statistics are per event day, with 95% t
+  intervals; strategies are compared paired on the same days.
+
+**Results.**
+
+| Stage | Days | Result |
+|---|---|---|
+| Live, 10 s | first settled days, Oct 5-8 | v1 -0.73c, v2 -1.02c per contract; every day negative |
+| Inventory skew, replay | same | v3a -0.77c, v3b -0.75c: no better |
+| Breakdown, replay | same | Queue fills about break even; sweeps lose and are two thirds of volume |
+| Live, 2 s, stop rule | Oct 10-19 | v1 -$25.14 a day [-38.92, -11.36], -0.36c; v2 -$24.94 [-37.00, -12.89], -0.45c. Retired |
+| Speed, replay of the 2 s recording | Oct 10-19, paired | v1 at 2 s minus 10 s: -$10.98 a day [-21.89, -0.06]; swept share 67% vs 70% (Oct 9-19) |
+| Imbalance filter v4, registered in advance, replay | Oct 10-19, paired | v4 - v1 +$19.03 a day [+4.44, +33.61], but -0.43c vs -0.46c per contract on 43% of the volume |
+
+**Conclusion.** A newcomer at the back of the queue is run over by traders
+who react in well under two seconds. Faster polling, inventory skew, a
+model veto and an imbalance filter all left the loss per contract where it
+was or made it worse; the filters only lost less by trading less. The
+market-making line is closed (`docs/decisions.md`, 2026-10-20).
+
+**Caveat.** Replay matched live within 0-3% on contracts per day, but is
+about 0.1c per contract more pessimistic on PnL (Oct 10-19, v1: -0.46c
+replayed vs -0.36c live). Strategies and speeds were always compared replay
+against replay.

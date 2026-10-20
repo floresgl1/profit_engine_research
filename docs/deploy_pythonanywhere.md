@@ -127,7 +127,25 @@ The daily summary, in plain words:
 `--pair-from` still works as another name for `--since`. The full
 statistics (worst day, drawdown, every day) stay in `maker-report`.
 
-## Current schedule (as deployed, 2026-10-05; maker at 2-second ticks for the speed experiment)
+## Current state (2026-10-20): stopped
+
+The research is complete (`docs/findings.md`) and nothing should run:
+- the always-on task is stopped;
+- the Discord daily summary and hourly health check are disabled (with the
+  maker stopped, the health check would warn every 6 hours that its last
+  tick is old);
+- `data/rescue/maker.db` is a frozen copy of the 2-second recording
+  (Oct 9-20); run `replay` on it for any further quoting idea.
+
+**Never read a database from a console or scheduled task while the
+always-on task is writing it.** Consoles, scheduled tasks and the always-on
+task run on different machines over a network mount (`df -h ~` shows it),
+and SQLite's locks don't hold between them. While the engine wrote, a
+compaction and a long replay run from a console gave "file is not a
+database" and "malformed" errors. Stop the task, copy the files
+(`cp data/maker.db* data/rescue/`), and work on the copy.
+
+## Last deployed schedule (2026-10-05 to 2026-10-20; maker at 2-second ticks from 2026-10-08)
 
 The PythonAnywhere account (`floresgl907`, Developer plan) allows one
 always-on task and shares its daily CPU allowance with finance_bot.
