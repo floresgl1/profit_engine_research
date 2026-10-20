@@ -404,3 +404,36 @@ market-making line is closed (`docs/decisions.md`, 2026-10-20).
 about 0.1c per contract more pessimistic on PnL (Oct 10-19, v1: -0.46c
 replayed vs -0.36c live). Strategies and speeds were always compared replay
 against replay.
+
+## Maker markout across categories (`markout_screen.py`)
+
+**Question.** The weather markout found incumbent makers keep +0.64c per
+contract after the maker fee, and our newcomer lost about 1c less than that
+live. Is there any category of Kalshi where makers keep enough for a
+newcomer to survive?
+
+**Method.** The calibration screen's sample (up to 3 settled markets per
+series, 16,435 markets in 6,751 series). Every public trade of each market,
+up to 20 pages; the 220 biggest (66% of contracts) time-sampled, one page
+from each of 20 windows over the market's life. Maker PnL per contract to
+settlement after 0.0175 x P x (1-P), weighted by traded contracts, SE
+clustered by series, discovery and holdout halves by event. Registered bar:
+discovery range entirely above +1c AND holdout estimate above +1c.
+
+**Result** (`markout_screen.md`, `markout_screen_world.md`): **no category
+holds up.**
+
+| | Per contract after fee |
+|---|---|
+| All categories | +0.43c [-0.75c, +1.62c] |
+| World (passed), screen | discovery +3.86c [+1.70c, +6.01c], holdout +3.30c; without one market (KXRAINNOSB, 30% of contracts) holdout +0.14c |
+| Exotics (passed), screen | 9 parlay markets, 23,135 contracts, all resolved NO: too small to trade, too fragile to read |
+| World, 85 fresh markets (registered confirmation) | +1.95c [-1.15c, +5.06c]: not confirmed |
+
+**Reading it.** With 1-3 markets per series, a market's maker PnL to
+settlement mostly reflects which way it resolved, not a steady edge. The
+weather markout was steadier because it averaged every bucket of each event,
+and exactly one bucket wins. Categories of one-off events (World, some
+Politics) show positive point estimates consistent with takers backing
+longshots (the new-pope-name markets: +13.8c, every one resolved NO), but
+neither the screen nor the confirmation separates that from luck.

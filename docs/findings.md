@@ -7,7 +7,9 @@ a repeatable, honest edge in Kalshi (and Polymarket) prediction markets?
 costs and fill realism were applied. Where a price could actually be traded,
 the market was right. The one place money is made, providing liquidity, is
 won on speed this setup can't reach: polling 5x faster made no difference,
-and the last filter only lost less by trading less.
+and the last filter only lost less by trading less. A maker markout across
+every Kalshi category found no place where makers clearly keep enough for a
+newcomer to survive.
 
 Paper only throughout: no orders, no credentials, public GET endpoints only
 (`tests/test_read_only.py`). The engine was stopped on 2026-10-20.
@@ -30,6 +32,7 @@ Paper only throughout: no orders, no credentials, public GET endpoints only
 | 12 | Same makers live at 2 s ticks, 10 settled days, pre-agreed stop rule | Both clearly losing: v1 -$25.14 a day [-38.92, -11.36], -0.36c; v2 -$24.94 [-37.00, -12.89], -0.45c. Retired | same |
 | 13 | Polling speed: the 2 s recording replayed at 2 s and at 10 s, same days | 2 s not better, slightly worse: v1 -$10.98 a day [-21.89, -0.06]; swept share 67% vs 70% | same |
 | 14 | Book-imbalance filter (v4), registered in advance, replay | Passed the registered bar in dollars, but -0.43c per contract vs v1's -0.46c on 43% of the volume: it lost less by trading less. Line closed | same |
+| 15 | Maker markout across all Kalshi categories (16,435 markets, 6,751 series), registered bar +1c per contract after fee | All categories together +0.43c [-0.75, +1.62]. World and Exotics passed, each resting on one market or series; World not confirmed on 85 fresh markets (+1.95c [-1.15, +5.06]). Closed | `research/README.md` (cross-category markout) |
 
 ## Why
 
@@ -71,7 +74,9 @@ negative results can be trusted:
   (and a live maker polling 5x slower), so strategies and speeds were
   compared on identical market activity;
 - comparing per contract, not only per day: v2 and v4 both "won" in dollars
-  by trading less.
+  by trading less;
+- testing a fragile pass on fresh data instead of acting on it: World passed
+  the cross-category screen on one market and didn't hold on 85 new ones.
 
 ## Mistakes worth remembering
 
@@ -102,4 +107,6 @@ negative results can be trusted:
 Nothing runs. The 2-second recording (Oct 9-20) is kept on PythonAnywhere
 in `data/rescue/maker.db` (not in the repository), and `replay` can test any
 further quoting rule on it. A new idea should first beat v1 per contract on
-those days.
+those days. One loose thread, not a lead: one-off event markets (World,
+some Politics) showed positive maker point estimates, consistent with takers
+backing longshots, but too noisy to separate from luck.
