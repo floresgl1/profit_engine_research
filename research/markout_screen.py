@@ -41,7 +41,7 @@ import pickle
 import random
 import sys
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -176,19 +176,20 @@ def candidate(discovery: Stat | None, holdout: Stat | None) -> bool:
 # --- running and reporting -------------------------------------------------------------------------
 
 
-def _load():
+def _load() -> dict[str, MarketMarkout]:
+    """The cache holds plain dicts, so it reads the same whether the script ran as __main__ or not."""
     path = f"{CACHE}/markets.pkl"
     if os.path.exists(path):
         with open(path, "rb") as fh:
-            return pickle.load(fh)
+            return {k: MarketMarkout(**v) for k, v in pickle.load(fh).items()}
     return {}
 
 
-def _save(done: dict) -> None:
+def _save(done: dict[str, MarketMarkout]) -> None:
     os.makedirs(CACHE, exist_ok=True)
     tmp = f"{CACHE}/markets.pkl.tmp"
     with open(tmp, "wb") as fh:
-        pickle.dump(done, fh)
+        pickle.dump({k: asdict(v) for k, v in done.items()}, fh)
     os.replace(tmp, f"{CACHE}/markets.pkl")
 
 

@@ -118,3 +118,10 @@ def test_report_lists_categories_and_candidates():
     text = ms.report(rows, 12)
     assert "| Good | 6 | 6 | 6,000 | +3.00c" in text
     assert "**Candidates: Good.**" in text
+
+
+def test_cache_round_trip(tmp_path, monkeypatch):
+    monkeypatch.setattr(ms, "CACHE", str(tmp_path))
+    done = {"m": mk("S1", 100, 0.02)}
+    ms._save(done)
+    assert ms._load() == done
